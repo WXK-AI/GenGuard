@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GenGuard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="header">
+      <div class="logo">
+        <span class="shield">🛡️</span>
+        <h1>GenGuard</h1>
+      </div>
+      <span class="version">v2.0</span>
+    </header>
+
+    <div class="status-section">
+      <div class="status-indicator" id="backend-status">
+        <span class="dot"></span>
+        <span class="text">Checking backend...</span>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <h3>Backend API</h3>
+      <p><code>http://localhost:5000</code></p>
+      <div class="features">
+        <div class="feature">🔍 PaddleOCR (PP-OCRv4)</div>
+        <div class="feature">🧠 Piiranha NER Model</div>
+        <div class="feature">📊 Risk Scoring</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="test-btn" class="btn btn-primary">Test Backend</button>
+      <button id="docs-btn" class="btn btn-secondary">Open API Docs</button>
+    </div>
+
+    <footer class="footer">
+      <p>Start backend: <code>python main.py</code></p>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
