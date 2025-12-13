@@ -123,27 +123,21 @@ _ner_pipeline = None
 
 
 def get_ner_pipeline():
-    """Get or create Piiranha NER pipeline."""
+    """Get or create NER pipeline using fast DistilBERT model."""
     global _ner_pipeline
     if _ner_pipeline is None:
-        logger.info("Loading Piiranha NER model...")
+        logger.info("Loading DistilBERT NER model (fast, ~66M params)...")
         try:
-            # Try Piiranha first
-            _ner_pipeline = pipeline(
-                "token-classification",
-                model="iiiorg/piiranha-v1-detect-personal-information",
-                aggregation_strategy="simple"
-            )
-            logger.info("Piiranha model loaded successfully!")
-        except Exception as e:
-            logger.warning(f"Failed to load Piiranha: {e}, falling back to generic NER")
-            # Fallback to generic NER
+            # Use fast DistilBERT NER model (~250MB vs 1.1GB for Piiranha)
             _ner_pipeline = pipeline(
                 "ner",
-                model="dslim/bert-base-NER",
+                model="dslim/distilbert-NER",
                 aggregation_strategy="simple"
             )
-            logger.info("Fallback NER model loaded")
+            logger.info("DistilBERT NER model loaded successfully!")
+        except Exception as e:
+            logger.warning(f"Failed to load DistilBERT NER: {e}")
+            _ner_pipeline = None
     return _ner_pipeline
 
 

@@ -295,8 +295,8 @@ async def startup_event():
     
     logger.info("=" * 50)
     logger.info("GenGuard API ready!")
-    logger.info("Server: http://localhost:5000")
-    logger.info("Docs:   http://localhost:5000/docs")
+    logger.info("Server: http://localhost:5001")
+    logger.info("Docs:   http://localhost:5001/docs")
     logger.info("=" * 50)
 
 
@@ -306,7 +306,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=5000,
+        port=5001,
         reload=True,
         log_level="info"
     )

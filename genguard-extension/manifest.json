@@ -1,47 +1,60 @@
 {
-  "manifest_version": 3,
-  "name": "GenGuard",
-  "description": "Real-time privacy risk assessment for Generative AI platforms with PaddleOCR and Piiranha PII detection.",
-  "version": "2.0.0",
-  "permissions": [
-    "storage",
-    "activeTab"
-  ],
-  "host_permissions": [
-    "https://chatgpt.com/*",
-    "https://chat.openai.com/*",
-    "https://gemini.google.com/*",
-    "http://localhost:5000/*"
-  ],
-  "background": {
-    "service_worker": "src/background/service-worker.js"
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["src/content/chatgpt.js"],
-      "css": ["src/ui/overlay.css"],
-      "run_at": "document_idle"
+    "manifest_version": 3,
+    "name": "GenGuard",
+    "description": "Real-time privacy risk assessment for Generative AI platforms with PaddleOCR and Piiranha PII detection.",
+    "version": "2.0.0",
+    "permissions": [
+        "storage",
+        "activeTab"
+    ],
+    "host_permissions": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*",
+        "http://localhost:5001/*"
+    ],
+    "background": {
+        "service_worker": "src/background/service-worker.js"
     },
-    {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["src/content/gemini.js"],
-      "css": ["src/ui/overlay.css"],
-      "run_at": "document_idle"
+    "content_scripts": [
+        {
+            "matches": [
+                "https://chatgpt.com/*",
+                "https://chat.openai.com/*"
+            ],
+            "js": [
+                "src/content/chatgpt.js"
+            ],
+            "css": [
+                "src/ui/overlay.css"
+            ],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": [
+                "https://gemini.google.com/*"
+            ],
+            "js": [
+                "src/content/gemini.js"
+            ],
+            "css": [
+                "src/ui/overlay.css"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "action": {
+        "default_popup": "src/popup/popup.html",
+        "default_icon": {
+            "16": "assets/icons/icon16.png",
+            "48": "assets/icons/icon48.png",
+            "128": "assets/icons/icon128.png"
+        },
+        "default_title": "GenGuard - Privacy Protection"
+    },
+    "icons": {
+        "16": "assets/icons/icon16.png",
+        "48": "assets/icons/icon48.png",
+        "128": "assets/icons/icon128.png"
     }
-  ],
-  "action": {
-    "default_popup": "src/popup/popup.html",
-    "default_icon": {
-      "16": "assets/icons/icon16.png",
-      "48": "assets/icons/icon48.png",
-      "128": "assets/icons/icon128.png"
-    },
-    "default_title": "GenGuard - Privacy Protection"
-  },
-  "icons": {
-    "16": "assets/icons/icon16.png",
-    "48": "assets/icons/icon48.png",
-    "128": "assets/icons/icon128.png"
-  }
 }

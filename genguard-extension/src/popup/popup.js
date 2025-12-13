@@ -1,6 +1,6 @@
 // GenGuard Popup Script
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = 'http://localhost:5001';
 
 document.addEventListener('DOMContentLoaded', () => {
     checkBackendStatus();

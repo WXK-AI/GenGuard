@@ -4,8 +4,8 @@
 (function () {
     'use strict';
 
-    const API_BASE = 'http://localhost:5000';
-    
+    const API_BASE = 'http://localhost:5001';
+
     // State
     let currentAnalysis = null;
     let debounceTimer = null;
@@ -119,7 +119,7 @@
     function handleFileChange(event) {
         const target = event.target;
         if (!target.matches || !target.matches(SELECTORS.fileInput)) return;
-        
+
         for (const file of target.files) {
             if (file.type.startsWith('image/')) {
                 analyzeImageFile(file);
@@ -145,20 +145,20 @@
     async function analyzeImageFile(file) {
         try {
             showToast('🔍 Running PaddleOCR...', 'info');
-            
+
             // Convert to base64
             const base64 = await fileToBase64(file);
-            
+
             const response = await fetch(`${API_BASE}/analyze/image`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image: base64, filename: file.name || 'image.png' })
             });
-            
+
             if (!response.ok) throw new Error('Backend error');
-            
+
             const result = await response.json();
-            
+
             if (result.entities && result.entities.length > 0) {
                 showFileWarning(file.name || 'Image', result);
             } else {
@@ -187,7 +187,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text })
             });
-            
+
             if (!response.ok) throw new Error('Backend error');
             return await response.json();
         } catch (e) {
@@ -206,7 +206,7 @@
 
         try {
             const result = await analyzeTextWithBackend(text);
-            
+
             if (result && result.entities && result.entities.length > 0) {
                 currentAnalysis = result;
                 showOverlay(result, target);
@@ -296,7 +296,7 @@
         if (!currentAnalysis || !currentAnalysis.entities.length) return;
 
         const text = target.value || target.innerText || target.textContent || '';
-        
+
         try {
             const response = await fetch(`${API_BASE}/replace`, {
                 method: 'POST',
@@ -307,11 +307,11 @@
                     mode: 'placeholder'
                 })
             });
-            
+
             if (!response.ok) throw new Error('Replace failed');
-            
+
             const result = await response.json();
-            
+
             if (target.value !== undefined) {
                 target.value = result.text;
             } else {
@@ -377,7 +377,7 @@
             <button class="gfw-btn gfw-btn-secondary" id="gfw-dismiss">Dismiss</button>
           </div>
         `;
-        
+
         document.body.appendChild(warningDiv);
         document.getElementById('gfw-close').onclick = () => warningDiv.remove();
         document.getElementById('gfw-dismiss').onclick = () => warningDiv.remove();

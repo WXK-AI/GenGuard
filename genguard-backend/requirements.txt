@@ -1,24 +1,24 @@
 # GenGuard Python Backend Dependencies
 
 # Web Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.6
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
 
 # PaddleOCR
-paddlepaddle==2.6.0
-paddleocr==2.7.3
+paddlepaddle>=2.6.2
+paddleocr>=2.7.0
 
 # Piiranha PII Detection (Hugging Face)
-transformers==4.36.0
-torch==2.1.0
+transformers>=4.36.0
+torch>=2.1.0
 
 # Regex patterns
-regex==2023.12.25
+regex>=2023.12.25
 
 # Image processing
-Pillow==10.2.0
-numpy==1.26.3
+Pillow>=10.2.0
+numpy>=1.24.0
 
 # PDF support
-PyMuPDF==1.23.8
+PyMuPDF>=1.23.0
