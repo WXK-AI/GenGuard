@@ -1,73 +1,63 @@
-# React + TypeScript + Vite
+# GenGuard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+GenGuard is a **Zero-Knowledge**, client-side browser extension designed for detecting Personally Identifiable Information (PII) and confidential data *before* it is submitted to GenAI platforms like ChatGPT and Google Gemini.
 
-Currently, two official plugins are available:
+It functions strictly on-device using WebAssembly and ONNX Runtime Web, guaranteeing that your inputs **never** leave your browser unless explicitly permitted. 
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## 🔒 Key Features
+- **Zero-Knowledge Architecture:** No cloud dependencies, no API calls, no analytics, and absolutely zero telemetry of user content.
+- **Custom Native Model:** Powered by `piiranha-malaysia-v4-final`, a DeBERTa-v3 model heavily fine-tuned for Malaysian entities (MyKad, Phone numbers, Bank accounts, Local Addresses) alongside international PII formats. Includes 17 BIO tags.
+- **In-Place Highlight & Redaction:** Real-time highlights appear directly in the ChatGPT/Gemini prompt box, with single-click inline redactions.
+- **Multi-Modal Scanning:** Supports raw text scanning, PDF extraction (via bundled `pdfjs` worker), and offline Image OCR (PaddleOCR mobile models) directly in your browser.
+- **Deterministic Risk Scoring:** Calculates a quantitative risk score (0-100) based on severity weights, nudging the user to intercept leaks early instead of hard-blocking workflows.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🛠 Tech Stack
+- **Framework:** Chrome Manifest V3, React 18, TypeScript, Vite & Tailwind CSS.
+- **AI Runtime:** `onnxruntime-web` (pure WASM + WebGPU), avoiding bloated wrappers like Transformers.js.
+- **Tokenization:** Custom SentencePiece/BPE tokenizer directly implemented in pure TypeScript.
+- **Regex engine:** Linear-time safe custom regex detection via `re2-wasm`.
+- **OCR Engine:** PaddleOCR `PP-OCRv5 mobile` (Detection, Classification, Recognition via ONNX).
 
-## Expanding the ESLint configuration
+## 🚀 Installation & Local Development
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 1. Prerequisites 
+- Node.js & npm setup.
+- Models must be pre-downloaded and placed inside the `public/models/` directory prior to building.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+**Models Required in `public/models/`:**
+- `piiranha-malaysia-v4.onnx`
+- `piiranha-malaysia-v4.tokenizer.json`
+- `piiranha-malaysia-v4.config.json`
+- `ppocr-det-mobile.onnx`, `ppocr-cls-mobile.onnx`, `ppocr-rec-mobile.onnx` (If supporting OCR)
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 2. Setup
+Clone the repository and install dependencies:
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 3. Build Options
+```bash
+npm run dev          # Start Vite HMR server & build the extension (load `dist/` unpacked in Chrome)
+npm run build        # Build production extension to `dist/` folder
+npm run test         # Run unit tests
+npm run test:parity  # Run tokenizer/NER parity test suites
+npm run test:e2e     # Run Playwright E2E testing
 ```
+
+### 4. Load into Chrome
+1. Head to `chrome://extensions/`
+2. Enable **Developer mode**
+3. Click **Load unpacked**
+4. Select the `dist/` folder generated by Vite.
+
+## ⚙️ Operating Rules & Architecture Standards 
+GenGuard strictly adheres to the following principles:
+- **Manifest V3 Strict Adherence:** The extension operates heavily through Chrome APIs (`chrome.storage`, `sidePanel`, `declarativeNetRequest`). No persistent backgrounds.
+- **Performance:** Text scans (≤ 1000 words) under 800ms. PDF extraction under 5s. Total page-load overhead < 10%.
+- **Safe State:** We do *not* `console.log` user prompts under any circumstances. Everything operates defensively to protect user inputs.
+
+## 🛡 Escaping GenAI Leaks
+Click the GenGuard side panel to enable/disable protection and calibrate your risk-scoring matrix. You're completely in control of the thresholds that define *Safe*, *Caution*, *High*, and *Critical* intercepts.
