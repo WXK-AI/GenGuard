@@ -1,97 +1,73 @@
-# GenGuard - Privacy Risk Assessment for GenAI
+# React + TypeScript + Vite
 
-Real-time PII detection and masking for ChatGPT and Google Gemini using **PaddleOCR** and **Piiranha NER model**.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## Architecture
+Currently, two official plugins are available:
 
-```
-┌─────────────────────┐         ┌─────────────────────────────┐
-│  Chrome Extension   │  HTTP   │   Python Backend (Local)    │
-│  (Lightweight JS)   │ ◄─────► │   http://localhost:5000     │
-│                     │         │                             │
-│  • Monitor input    │         │   • PaddleOCR (PP-OCRv4)    │
-│  • Show warnings    │         │   • Piiranha PII Detection  │
-│  • Auto-replace     │         │   • Risk Scoring            │
-└─────────────────────┘         └─────────────────────────────┘
-```
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## Quick Start
+## React Compiler
 
-### 1. Start Python Backend
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-```bash
-cd genguard-backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python main.py
-```
+## Expanding the ESLint configuration
 
-The API will be available at `http://localhost:5000`
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
 
-### 2. Load Chrome Extension
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
 
-1. Go to `chrome://extensions/`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `genguard-extension/` folder
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
 
-### 3. Test It
-
-1. Go to [gemini.google.com](https://gemini.google.com) or [chatgpt.com](https://chatgpt.com)
-2. Type: `My IC is 990101-14-1234`
-3. You should see a warning overlay!
-
-## Features
-
-- 🔍 **PaddleOCR** - Fast, accurate OCR for images
-- 🧠 **Piiranha NER** - ML-based PII detection
-- 📊 **Risk Scoring** - 0-100 scale with levels (Low/Medium/High/Critical)
-- 🔒 **Auto-Replace** - One-click PII masking
-- 📄 **File Support** - Images, PDFs, text files
-
-## Detected PII Types
-
-| Type | Sensitivity | Example |
-|------|-------------|---------|
-| Malaysian IC (NRIC) | Critical | 990101-14-1234 |
-| SSN | Critical | 123-45-6789 |
-| Credit Card | Critical | 4111-1111-1111-1111 |
-| Email | Medium | user@example.com |
-| Phone | Medium | +60123456789 |
-| Names | Medium | John Smith |
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/analyze/text` | POST | Analyze text for PII |
-| `/analyze/image` | POST | OCR + PII detection |
-| `/analyze/file` | POST | Upload file for analysis |
-| `/replace` | POST | Replace PII in text |
-
-## Project Structure
-
-```
-MINE/
-├── genguard-backend/       # Python Backend
-│   ├── main.py             # FastAPI app
-│   ├── ocr.py              # PaddleOCR wrapper
-│   ├── detector.py         # Piiranha + regex
-│   ├── replacer.py         # PII masking
-│   └── requirements.txt
-│
-└── genguard-extension/     # Chrome Extension
-    ├── manifest.json
-    └── src/
-        ├── content/        # ChatGPT & Gemini scripts
-        ├── popup/          # Extension popup
-        └── background/     # Service worker
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
 
-## Requirements
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
-- Python 3.10+
-- Chrome Browser
-- 4GB+ RAM (for PaddleOCR + Piiranha models)
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```
