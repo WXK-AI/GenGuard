@@ -70,12 +70,48 @@ async function classifyChunk(encoded: EncodeResult): Promise<Array<{
 }
 
 /**
- * Merge BIO predictions into entity spans.
- *
- * Rules:
- * - Skip special tokens (wordId === null)
- * - Only use the first subword of each word (dedup via wordIds)
- * - B-X opens a new entity, I-X extends if same type, O closes
+ * Step 1: Build word-level predictions.
+ * Each word (unique wordId) gets:
+ *   - label + confidence from its FIRST subword
+ *   - startOffset from its first subword, endOffset from its LAST subword
+ * This ensures multi-subword entities like "901231-14-5678" get full spans.
+ */
+interface WordPrediction {
+  wordId: number;
+  label: string;
+  confidence: number;
+  startOffset: number;
+  endOffset: number;
+}
+
+function buildWordPredictions(
+  predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
+  encoded: EncodeResult,
+): WordPrediction[] {
+  const wordMap = new Map<number, WordPrediction>();
+
+  for (let i = 0; i < predictions.length; i++) {
+    const { wordId, label, confidence } = predictions[i];
+    if (wordId === null) continue;
+
+    const [start, end] = encoded.offsets[i];
+
+    if (!wordMap.has(wordId)) {
+      // First subword of this word — use its label
+      wordMap.set(wordId, { wordId, label, confidence, startOffset: start, endOffset: end });
+    } else {
+      // Subsequent subword — extend the end offset
+      const wp = wordMap.get(wordId)!;
+      if (end > wp.endOffset) wp.endOffset = end;
+    }
+  }
+
+  // Return sorted by wordId (preserves order)
+  return Array.from(wordMap.values()).sort((a, b) => a.wordId - b.wordId);
+}
+
+/**
+ * Step 2: BIO merge on word-level predictions.
  */
 function mergeEntities(
   predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
@@ -83,7 +119,9 @@ function mergeEntities(
   originalText: string,
   confidenceThreshold: number,
 ): Finding[] {
+  const words = buildWordPredictions(predictions, encoded);
   const findings: Finding[] = [];
+
   let currentEntity: {
     type: string;
     startOffset: number;
@@ -91,51 +129,35 @@ function mergeEntities(
     confidences: number[];
   } | null = null;
 
-  let lastWordId = -1;
-
-  for (let i = 0; i < predictions.length; i++) {
-    const { wordId, label, confidence } = predictions[i];
-
-    // Skip special tokens and padding
-    if (wordId === null) continue;
-
-    // Only process first subword of each word
-    if (wordId === lastWordId) continue;
-    lastWordId = wordId;
-
-    const [start, end] = encoded.offsets[i];
+  for (const wp of words) {
+    const { label, confidence, startOffset, endOffset } = wp;
 
     if (label.startsWith('B-')) {
-      // Close previous entity
-      if (currentEntity) {
-        pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-      }
-      // Open new entity
-      const entityType = label.slice(2);
+      if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
       currentEntity = {
-        type: entityType,
-        startOffset: start,
-        endOffset: end,
+        type: label.slice(2),
+        startOffset,
+        endOffset,
         confidences: [confidence],
       };
-    } else if (label.startsWith('I-') && currentEntity) {
+    } else if (label.startsWith('I-')) {
       const entityType = label.slice(2);
-      if (entityType === currentEntity.type) {
+      if (currentEntity && entityType === currentEntity.type) {
         // Extend current entity
-        currentEntity.endOffset = end;
+        currentEntity.endOffset = endOffset;
         currentEntity.confidences.push(confidence);
       } else {
-        // Type mismatch — close current, open new
-        pushEntity(currentEntity, findings, originalText, confidenceThreshold);
+        // I-X without matching B-X or type mismatch — start new entity
+        if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
         currentEntity = {
           type: entityType,
-          startOffset: start,
-          endOffset: end,
+          startOffset,
+          endOffset,
           confidences: [confidence],
         };
       }
     } else {
-      // O label — close current entity
+      // O label
       if (currentEntity) {
         pushEntity(currentEntity, findings, originalText, confidenceThreshold);
         currentEntity = null;
@@ -143,10 +165,7 @@ function mergeEntities(
     }
   }
 
-  // Close any remaining entity
-  if (currentEntity) {
-    pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-  }
+  if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
 
   return findings;
 }
@@ -184,7 +203,7 @@ function pushEntity(
  */
 export async function detectNER(
   text: string,
-  confidenceThreshold: number = 0.70,
+  confidenceThreshold: number = 0.10,
 ): Promise<{ findings: Finding[]; timeMs: number }> {
   if (!tokenizer || !isReady()) {
     throw new Error('NER detector not initialized');
@@ -195,6 +214,7 @@ export async function detectNER(
   // For short texts (most common case), single-pass
   const encoded = tokenizer.encode(text, SEQ_LEN);
   const predictions = await classifyChunk(encoded);
+
   const findings = mergeEntities(predictions, encoded, text, confidenceThreshold);
 
   const timeMs = Math.round(performance.now() - t0);

@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getFile, hasFile, downloadTextFile } from '../lib/model-store';
 import { NER_MODEL_CONTRACT } from '../core/detectors/ner-model-contract';
 import { initSession, dispose, isReady, type OrtStatus } from '../lib/ort-engine';
-import { initTokenizer, isTokenizerReady, detectNER } from '../core/detectors/ner-detector';
-import type { Finding } from '../core/types';
+import { initTokenizer, isTokenizerReady } from '../core/detectors/ner-detector';
+import { assess } from '../core/engine';
+import type { Finding, RiskAssessment } from '../core/types';
 
 type DownloadStatus = 'idle' | 'downloading' | 'cached' | 'error';
 type Tab = 'dashboard' | 'history' | 'settings' | 'model';
@@ -86,9 +87,16 @@ export default function App() {
     }
   }, [loadTokenizer]);
 
+  // Live assessment state from content script
+  const [liveAssessment, setLiveAssessment] = useState<RiskAssessment | null>(null);
+  const [liveSource, setLiveSource] = useState<string>('');
+
   useEffect(() => {
     const port = chrome.runtime.connect({ name: 'sidepanel' });
     portRef.current = port;
+
+    // Track generation to discard stale results from slow NER
+    let assessGeneration = 0;
 
     port.onMessage.addListener((msg) => {
       if (msg.type === 'DOWNLOAD_STATUS') {
@@ -101,6 +109,35 @@ export default function App() {
         if (msg.status === 'cached') {
           loadOrtFromCache();
         }
+      } else if (msg.type === 'ASSESS_TEXT') {
+        const text = msg.text ?? '';
+        const tabId = msg.tabId;
+        const source = msg.source || '';
+
+        // Empty text → clear live assessment immediately
+        if (text.trim().length === 0) {
+          assessGeneration++;
+          setLiveAssessment(null);
+          setLiveSource('');
+          return;
+        }
+
+        // Non-empty text → run assessment async
+        const gen = ++assessGeneration;
+        assess({ text }).then((result) => {
+          // Only apply if this is still the latest request
+          if (gen !== assessGeneration) return;
+          setLiveAssessment(result);
+          setLiveSource(source);
+          // Send result back to content script via service worker
+          chrome.runtime.sendMessage({
+            type: 'RISK_UPDATE_FROM_PANEL',
+            assessment: { score: result.score, level: result.level, findings: result.findings },
+            tabId,
+          }).catch(() => {});
+        }).catch((err) => {
+          console.error('[GenGuard] Live assessment failed:', err);
+        });
       }
     });
 
@@ -161,7 +198,7 @@ export default function App() {
 
       <main className="p-4">
         {activeTab === 'dashboard' && (
-          <DashboardPage model={model} onDownload={handleDownloadModel} />
+          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} />
         )}
         {activeTab === 'history' && <p className="text-sm text-gray-500">History — coming soon</p>}
         {activeTab === 'settings' && <p className="text-sm text-gray-500">Settings — coming soon</p>}
@@ -175,19 +212,20 @@ export default function App() {
 
 // ── Dashboard with NER Test ──────────────────────────────────────────────────
 
-function DashboardPage({ model, onDownload }: { model: ModelState; onDownload: () => void }) {
+function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
+  model: ModelState; onDownload: () => void;
+  liveAssessment: RiskAssessment | null; liveSource: string;
+}) {
   const [testText, setTestText] = useState('');
-  const [findings, setFindings] = useState<Finding[]>([]);
+  const [assessment, setAssessment] = useState<RiskAssessment | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [scanTime, setScanTime] = useState(0);
 
   const handleScan = async () => {
     if (!testText.trim()) return;
     setScanning(true);
     try {
-      const result = await detectNER(testText);
-      setFindings(result.findings);
-      setScanTime(result.timeMs);
+      const result = await assess({ text: testText });
+      setAssessment(result);
     } catch (err) {
       console.error('Scan failed:', err);
     } finally {
@@ -195,8 +233,23 @@ function DashboardPage({ model, onDownload }: { model: ModelState; onDownload: (
     }
   };
 
+  // Show live assessment or manual assessment
+  const displayAssessment = assessment || liveAssessment;
+
   return (
     <div className="space-y-4">
+      {/* Live monitoring indicator */}
+      {liveAssessment && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-700">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <span className="text-xs text-blue-700 dark:text-blue-300 font-medium">
+              Live monitoring: {liveSource === 'chatgpt' ? 'ChatGPT' : liveSource === 'gemini' ? 'Gemini' : liveSource}
+            </span>
+          </div>
+        </div>
+      )}
+
       {model.download === 'idle' && model.ort === 'not_loaded' && (
         <div className="bg-yellow-50 dark:bg-yellow-900/20 rounded-lg p-4 border border-yellow-200 dark:border-yellow-700">
           <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2">
@@ -230,53 +283,78 @@ function DashboardPage({ model, onDownload }: { model: ModelState; onDownload: (
         </div>
       )}
 
-      {model.ort === 'ready' && (
-        <>
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-            <label className="block text-xs font-medium text-gray-500 mb-1">Test NER Detection</label>
-            <textarea
-              value={testText}
-              onChange={(e) => setTestText(e.target.value)}
-              placeholder="Enter text with PII to test... e.g. Ahmad bin Ali IC 901231-14-5678 tinggal di Jalan Ampang"
-              className="w-full h-24 text-sm border border-gray-300 dark:border-gray-600 rounded p-2 bg-white dark:bg-gray-700 resize-none"
-            />
-            <button
-              onClick={handleScan}
-              disabled={scanning || !testText.trim()}
-              className="mt-2 px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
-            >
-              {scanning ? 'Scanning...' : 'Scan for PII'}
-            </button>
-          </div>
+      {/* Scan input — always show if model is ready OR if regex can still run */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <label className="block text-xs font-medium text-gray-500 mb-1">Test PII Detection</label>
+        <textarea
+          value={testText}
+          onChange={(e) => setTestText(e.target.value)}
+          placeholder="Enter text with PII to test... e.g. Ahmad bin Ali IC 901231-14-5678 tinggal di Jalan Ampang"
+          className="w-full h-24 text-sm border border-gray-300 dark:border-gray-600 rounded p-2 bg-white dark:bg-gray-700 resize-none"
+        />
+        <button
+          onClick={handleScan}
+          disabled={scanning || !testText.trim()}
+          className="mt-2 px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+        >
+          {scanning ? 'Scanning...' : 'Scan for PII'}
+        </button>
+        {model.ort !== 'ready' && (
+          <p className="text-[10px] text-gray-400 mt-1">NER model not loaded — regex-only mode</p>
+        )}
+      </div>
 
-          {findings.length > 0 && (
+      {/* Risk assessment result */}
+      {displayAssessment && (
+        <>
+          <RiskScoreCard assessment={displayAssessment} />
+
+          {displayAssessment.suggestions.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">Suggestions</h3>
+              <ul className="space-y-1">
+                {displayAssessment.suggestions.map((s, i) => (
+                  <li key={i} className="text-xs text-gray-700 dark:text-gray-300">&bull; {s}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {displayAssessment.findings.length > 0 && (
             <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
               <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-semibold">Findings ({findings.length})</h3>
-                <span className="text-xs text-gray-500">{scanTime} ms</span>
+                <h3 className="text-sm font-semibold">
+                  Findings ({displayAssessment.findings.length})
+                </h3>
+                <span className="text-xs text-gray-500">{displayAssessment.computeTimeMs} ms</span>
+              </div>
+              <div className="text-[10px] text-gray-400 mb-2">
+                NER: {displayAssessment.breakdown.nerCount} &middot; Regex: {displayAssessment.breakdown.regexCount} &middot; OCR: {displayAssessment.breakdown.ocrCount}
               </div>
               <div className="space-y-2">
-                {findings.map((f, i) => (
+                {displayAssessment.findings.map((f, i) => (
                   <div key={i} className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-gray-700 pb-1">
-                    <div>
-                      <span className={`inline-block px-1.5 py-0.5 rounded text-white text-[10px] font-medium mr-2 ${
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-white text-[10px] font-medium ${
                         f.severity === 'critical' ? 'bg-red-600' :
                         f.severity === 'high' ? 'bg-orange-500' :
-                        'bg-yellow-500'
+                        f.severity === 'medium' ? 'bg-yellow-500' :
+                        'bg-gray-400'
                       }`}>
                         {f.type}
                       </span>
-                      <span className="font-mono">{f.value}</span>
+                      <span className="font-mono truncate">{f.value}</span>
+                      <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{f.source}</span>
                     </div>
-                    <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>
+                    <span className="text-gray-400 shrink-0 ml-2">{(f.confidence * 100).toFixed(1)}%</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {findings.length === 0 && testText.trim() && !scanning && scanTime > 0 && (
-            <p className="text-sm text-green-600 dark:text-green-400">No PII detected ({scanTime} ms)</p>
+          {displayAssessment.findings.length === 0 && (
+            <p className="text-sm text-green-600 dark:text-green-400">No PII detected ({displayAssessment.computeTimeMs} ms)</p>
           )}
         </>
       )}
@@ -329,6 +407,32 @@ function ModelStatusPage({ model, onDownload, onReload }: { model: ModelState; o
 }
 
 // ── Shared Components ────────────────────────────────────────────────────────
+
+function RiskScoreCard({ assessment }: { assessment: RiskAssessment }) {
+  const levelColor: Record<string, string> = {
+    Safe: 'text-green-600 dark:text-green-400',
+    Caution: 'text-yellow-600 dark:text-yellow-400',
+    High: 'text-orange-600 dark:text-orange-400',
+    Critical: 'text-red-600 dark:text-red-400',
+  };
+  const barColor: Record<string, string> = {
+    Safe: 'bg-green-500',
+    Caution: 'bg-yellow-500',
+    High: 'bg-orange-500',
+    Critical: 'bg-red-500',
+  };
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-2">
+        <span className={`text-2xl font-bold ${levelColor[assessment.level]}`}>{assessment.score}</span>
+        <span className={`text-sm font-semibold ${levelColor[assessment.level]}`}>{assessment.level}</span>
+      </div>
+      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+        <div className={`h-2 rounded-full transition-all ${barColor[assessment.level]}`} style={{ width: `${assessment.score}%` }} />
+      </div>
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   const color: Record<string, string> = {

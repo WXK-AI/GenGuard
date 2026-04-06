@@ -1,0 +1,110 @@
+{
+  "patterns": [
+    {
+      "name": "IC_NUMBER",
+      "label": "Malaysian IC Number",
+      "regex": "\\b\\d{6}-\\d{2}-\\d{4}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "PASSPORT",
+      "label": "Malaysian Passport",
+      "regex": "\\b[A-Z]\\d{8}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "PHONE",
+      "label": "Malaysian Phone",
+      "regex": "(?:\\+?60|0)1\\d[-\\s]?\\d{3,4}[-\\s]?\\d{4}\\b",
+      "severity": "high",
+      "flags": "g"
+    },
+    {
+      "name": "EMAIL",
+      "label": "Email Address",
+      "regex": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b",
+      "severity": "high",
+      "flags": "gi"
+    },
+    {
+      "name": "BANK_ACCT",
+      "label": "Bank Account Number",
+      "regex": "\\b\\d{10,18}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "CREDIT_CARD",
+      "label": "Credit Card Number",
+      "regex": "\\b(?:4\\d{3}|5[1-5]\\d{2}|3[47]\\d{2}|6(?:011|5\\d{2}))[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "US_SSN",
+      "label": "US Social Security Number",
+      "regex": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "IBAN",
+      "label": "IBAN",
+      "regex": "\\b[A-Z]{2}\\d{2}[A-Z0-9]{4}\\d{7}(?:[A-Z0-9]{0,18})\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "IP_ADDRESS",
+      "label": "IPv4 Address",
+      "regex": "\\b(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\b",
+      "severity": "medium",
+      "flags": "g"
+    },
+    {
+      "name": "AWS_KEY",
+      "label": "AWS Access Key",
+      "regex": "AKIA[0-9A-Z]{16}",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "GITHUB_PAT",
+      "label": "GitHub Personal Access Token",
+      "regex": "ghp_[A-Za-z0-9]{36}",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "GOOGLE_API_KEY",
+      "label": "Google API Key",
+      "regex": "AIza[0-9A-Za-z_-]{35}",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "JWT",
+      "label": "JSON Web Token",
+      "regex": "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+",
+      "severity": "high",
+      "flags": "g"
+    },
+    {
+      "name": "PRIVATE_KEY",
+      "label": "Private Key Block",
+      "regex": "-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "MY_POSTCODE",
+      "label": "Malaysian Postcode",
+      "regex": "\\b\\d{5}\\b",
+      "severity": "low",
+      "flags": "g",
+      "contextRequired": true
+    }
+  ]
+}

@@ -58,7 +58,7 @@ export interface GenGuardSettings {
 
 export const DEFAULT_SETTINGS: GenGuardSettings = {
   enabled: true,
-  nerConfidenceThreshold: 0.70,
+  nerConfidenceThreshold: 0.10,
   enableRegex: true,
   enableNer: true,
   enableOcr: true,

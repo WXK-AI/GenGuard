@@ -101,6 +101,32 @@ async function doDownload() {
   }
 }
 
+// ── Message routing from content scripts ────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'ASSESS_TEXT') {
+    // Forward text from content script to side panel for assessment
+    broadcast({ type: 'ASSESS_TEXT', text: msg.text, source: msg.source, tabId: sender.tab?.id });
+    sendResponse({ ok: true });
+  } else if (msg.type === 'RISK_UPDATE_FROM_PANEL') {
+    // Side panel sends back assessment — relay to the originating content script tab
+    if (msg.tabId) {
+      chrome.tabs.sendMessage(msg.tabId, {
+        type: 'RISK_UPDATE',
+        assessment: msg.assessment,
+      }).catch(() => {});
+    }
+    sendResponse({ ok: true });
+  } else if (msg.type === 'OPEN_SIDE_PANEL') {
+    // Content script requests to open the side panel
+    if (sender.tab?.id) {
+      chrome.sidePanel.open({ tabId: sender.tab.id }).catch(() => {});
+    }
+    sendResponse({ ok: true });
+  }
+  return false;
+});
+
 // Check cache on startup
 hasFile(MODEL_CACHE_KEY).then((cached) => {
   if (cached) {

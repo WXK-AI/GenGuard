@@ -109,7 +109,6 @@ export class DeBERTaTokenizer {
     const allWordIds: (number | null)[] = [];
     const allOffsets: [number, number][] = [];
 
-    let charPos = 0;
     for (let wordIdx = 0; wordIdx < words.length; wordIdx++) {
       const { text: wordText, originalStart } = words[wordIdx];
       const subTokens = this.unigramEncode(wordText);
