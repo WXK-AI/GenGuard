@@ -3,10 +3,14 @@
  *
  * Watches the prompt box for text changes using a hybrid approach:
  *   - `input` / `keyup` / `paste` events (immediate)
- *   - Polling fallback every 500ms (catches React-controlled updates the events miss)
+ *   - Polling fallback every 500ms (catches React-controlled updates)
  * Sends text to service worker → side panel for PII assessment.
  * Intercepts submit when risk score ≥ 20.
+ * Respects settings from chrome.storage.local (live updates via onChanged).
  */
+
+import { updateHighlights, clearHighlights, isHighlightSupported, setIntensity } from './inline-highlighter';
+import type { HighlightFinding, HighlightIntensity } from './inline-highlighter';
 
 console.log('[GenGuard] ChatGPT injector loaded');
 
@@ -17,24 +21,120 @@ let lastAssessment: { score: number; level: string; findings: unknown[] } | null
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
 
+// ── Settings (live-synced from chrome.storage) ───────────────────────────────
+
+let settings = {
+  enabled: true,
+  inlineHighlightEnabled: true,
+  highlightIntensity: 'normal' as HighlightIntensity,
+};
+
+// Load settings on startup
+chrome.storage.local.get('genguard_settings').then((result) => {
+  const s = result.genguard_settings;
+  if (s) {
+    settings.enabled = s.enabled ?? true;
+    settings.inlineHighlightEnabled = s.inlineHighlight?.enabled ?? true;
+    settings.highlightIntensity = s.inlineHighlight?.intensity ?? 'normal';
+  }
+  if (!settings.enabled) {
+    clearHighlights();
+    lastAssessment = null;
+    updateBadge();
+  }
+});
+
+// React to settings changes in real-time
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.genguard_settings) return;
+  const s = changes.genguard_settings.newValue;
+  if (!s) return;
+
+  const wasEnabled = settings.enabled;
+  settings.enabled = s.enabled ?? true;
+  settings.inlineHighlightEnabled = s.inlineHighlight?.enabled ?? true;
+  settings.highlightIntensity = s.inlineHighlight?.intensity ?? 'normal';
+
+  // Update CSS intensity in real-time
+  setIntensity(settings.highlightIntensity);
+
+  // If just disabled, clear everything
+  if (wasEnabled && !settings.enabled) {
+    clearHighlights();
+    lastAssessment = null;
+    updateBadge();
+  }
+
+  // If highlights just disabled, clear them
+  if (!settings.inlineHighlightEnabled) {
+    clearHighlights();
+  }
+
+  // If just enabled, scan current text
+  if (!wasEnabled && settings.enabled && currentEditor) {
+    lastSentText = ''; // Force resend
+    sendIfChanged();
+  }
+});
+
 // ── Communication ────────────────────────────────────────────────────────────
 
 function sendToBackground(msg: Record<string, unknown>) {
   chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'RISK_UPDATE') {
     lastAssessment = msg.assessment;
     updateBadge();
+    applyInlineHighlights(msg.assessment?.findings ?? []);
+  } else if (msg.type === 'GET_PROMPT_TEXT') {
+    const text = currentEditor ? getTextContent(currentEditor).trim() : '';
+    sendResponse({ text, source: 'chatgpt' });
+    return true;
+  } else if (msg.type === 'REDACT_IN_EDITOR') {
+    const ok = performRedactions(msg.replacements ?? []);
+    sendResponse({ ok });
+    return true;
   }
 });
+
+function applyInlineHighlights(findings: HighlightFinding[]) {
+  if (!currentEditor || !isHighlightSupported()) return;
+  if (!settings.inlineHighlightEnabled || findings.length === 0) {
+    clearHighlights();
+    return;
+  }
+  updateHighlights(currentEditor, findings, settings.highlightIntensity);
+}
+
+// ── Redaction ───────────────────────────────────────────────────────────────
+
+function performRedactions(replacements: { startIndex: number; endIndex: number; replacement: string }[]): boolean {
+  if (!currentEditor) return false;
+  const text = getTextContent(currentEditor);
+  // Apply replacements from end to start to preserve indices
+  const sorted = [...replacements].sort((a, b) => b.startIndex - a.startIndex);
+  let result = text;
+  for (const r of sorted) {
+    result = result.slice(0, r.startIndex) + r.replacement + result.slice(r.endIndex);
+  }
+  // Write back to editor
+  if (currentEditor instanceof HTMLTextAreaElement) {
+    currentEditor.value = result;
+    currentEditor.dispatchEvent(new Event('input', { bubbles: true }));
+  } else {
+    currentEditor.innerText = result;
+    currentEditor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }
+  lastSentText = ''; // Force re-scan
+  scheduleAssessment();
+  return true;
+}
 
 // ── Text Extraction ──────────────────────────────────────────────────────────
 
 function findEditor(): HTMLElement | null {
-  // ChatGPT 2024-2025: div#prompt-textarea[contenteditable]
-  // Fallback: textarea[data-id] (legacy)
   return document.querySelector<HTMLElement>(
     '#prompt-textarea, textarea[data-id]'
   );
@@ -48,27 +148,26 @@ function getTextContent(el: HTMLElement): string {
 // ── Change Detection (hybrid: events + polling) ─────────────────────────────
 
 function scheduleAssessment() {
+  if (!settings.enabled) return;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(sendIfChanged, 300);
 }
 
 function sendIfChanged() {
   const el = currentEditor;
-  if (!el) return;
+  if (!el || !settings.enabled) return;
 
   const text = getTextContent(el).trim();
 
-  // Only send if text actually changed
   if (text === lastSentText) return;
   lastSentText = text;
 
   if (text.length > 0) {
     sendToBackground({ type: 'ASSESS_TEXT', text, source: 'chatgpt' });
   } else {
-    // Text was cleared — reset assessment immediately
     lastAssessment = null;
     updateBadge();
-    // Also tell the side panel to clear
+    clearHighlights();
     sendToBackground({ type: 'ASSESS_TEXT', text: '', source: 'chatgpt' });
   }
 }
@@ -76,7 +175,7 @@ function sendIfChanged() {
 function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(() => {
-    if (currentEditor) sendIfChanged();
+    if (currentEditor && settings.enabled) sendIfChanged();
   }, 500);
 }
 
@@ -96,6 +195,7 @@ function findSendButton(): HTMLButtonElement | null {
 }
 
 function interceptSubmit(e: Event) {
+  if (!settings.enabled) return;
   if (!lastAssessment || lastAssessment.score < 20) return;
   e.preventDefault();
   e.stopPropagation();
@@ -104,6 +204,7 @@ function interceptSubmit(e: Event) {
 }
 
 function interceptKeydown(e: KeyboardEvent) {
+  if (!settings.enabled) return;
   if (e.key !== 'Enter' || e.shiftKey) return;
   if (!lastAssessment || lastAssessment.score < 20) return;
   e.preventDefault();
@@ -239,7 +340,7 @@ function attach(el: HTMLElement) {
   el.addEventListener('cut', scheduleAssessment);
   el.addEventListener('focus', scheduleAssessment);
 
-  // Polling fallback (catches React state updates, programmatic clears, etc.)
+  // Polling fallback
   startPolling();
 
   el.addEventListener('keydown', interceptKeydown, { capture: true });
@@ -262,6 +363,11 @@ function attach(el: HTMLElement) {
   }
 
   console.log('[GenGuard] Attached to ChatGPT prompt');
+
+  // Scan any pre-existing text immediately
+  if (settings.enabled) {
+    sendIfChanged();
+  }
 }
 
 function detach() {
@@ -290,7 +396,6 @@ function tryAttach() {
   if (el && el !== currentEditor) {
     attach(el);
   } else if (!el && currentEditor) {
-    // Editor was removed from DOM (SPA navigation)
     detach();
   }
 }

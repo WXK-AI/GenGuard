@@ -4,7 +4,16 @@ import { NER_MODEL_CONTRACT } from '../core/detectors/ner-model-contract';
 import { initSession, dispose, isReady, type OrtStatus } from '../lib/ort-engine';
 import { initTokenizer, isTokenizerReady } from '../core/detectors/ner-detector';
 import { assess } from '../core/engine';
-import type { Finding, RiskAssessment } from '../core/types';
+import { addHistoryEntry, getHistory, clearHistory, type HistoryEntry } from '../lib/history-store';
+import type { Finding, RiskAssessment, GenGuardSettings } from '../core/types';
+
+function getMaskText(finding: Finding, mask: 'brackets' | 'asterisks' | 'redacted'): string {
+  switch (mask) {
+    case 'brackets': return `[${finding.type}]`;
+    case 'asterisks': return '*'.repeat(finding.value.length);
+    case 'redacted': return '[REDACTED]';
+  }
+}
 
 type DownloadStatus = 'idle' | 'downloading' | 'cached' | 'error';
 type Tab = 'dashboard' | 'history' | 'settings' | 'model';
@@ -29,6 +38,41 @@ export default function App() {
   });
 
   const portRef = useRef<chrome.runtime.Port | null>(null);
+  const settingsRef = useRef<Partial<GenGuardSettings>>({});
+  const lastLiveTextRef = useRef<string>('');
+  const lastLiveTabIdRef = useRef<number | undefined>();
+
+  // Load settings, keep ref in sync, and re-assess when settings change
+  useEffect(() => {
+    chrome.storage.local.get('genguard_settings').then((result) => {
+      if (result.genguard_settings) {
+        settingsRef.current = result.genguard_settings;
+      }
+    });
+
+    const handleChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area !== 'local' || !changes.genguard_settings) return;
+      settingsRef.current = changes.genguard_settings.newValue ?? {};
+
+      // Re-assess current live text with new settings
+      const text = lastLiveTextRef.current;
+      const tabId = lastLiveTabIdRef.current;
+      if (text.length > 0) {
+        assess({ text }, settingsRef.current).then((result) => {
+          setLiveAssessment(result);
+          if (tabId) {
+            chrome.runtime.sendMessage({
+              type: 'RISK_UPDATE_FROM_PANEL',
+              assessment: { score: result.score, level: result.level, findings: result.findings },
+              tabId,
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    };
+    chrome.storage.onChanged.addListener(handleChange);
+    return () => chrome.storage.onChanged.removeListener(handleChange);
+  }, []);
 
   /** Download tokenizer.json and init the tokenizer */
   const loadTokenizer = useCallback(async () => {
@@ -114,6 +158,10 @@ export default function App() {
         const tabId = msg.tabId;
         const source = msg.source || '';
 
+        // Track for re-assessment when settings change
+        lastLiveTextRef.current = text.trim();
+        lastLiveTabIdRef.current = tabId;
+
         // Empty text → clear live assessment immediately
         if (text.trim().length === 0) {
           assessGeneration++;
@@ -124,11 +172,23 @@ export default function App() {
 
         // Non-empty text → run assessment async
         const gen = ++assessGeneration;
-        assess({ text }).then((result) => {
+        assess({ text }, settingsRef.current).then((result) => {
           // Only apply if this is still the latest request
           if (gen !== assessGeneration) return;
           setLiveAssessment(result);
           setLiveSource(source);
+          // Record to history (only if findings found)
+          if (result.findings.length > 0) {
+            addHistoryEntry({
+              source: source || 'live',
+              score: result.score,
+              level: result.level,
+              findingCount: result.findings.length,
+              findingTypes: [...new Set(result.findings.map((f) => f.type))],
+              breakdown: result.breakdown,
+              computeTimeMs: result.computeTimeMs,
+            }).catch(() => {});
+          }
           // Send result back to content script via service worker
           chrome.runtime.sendMessage({
             type: 'RISK_UPDATE_FROM_PANEL',
@@ -150,6 +210,33 @@ export default function App() {
 
     return () => { port.disconnect(); };
   }, [loadOrtFromCache]);
+
+  // Scan current tab's prompt text on mount / when model becomes ready
+  useEffect(() => {
+    if (model.ort !== 'ready') return;
+
+    // Get active tab and ask its content script for current prompt text
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (!tab?.id) return;
+      chrome.runtime.sendMessage({ type: 'GET_PROMPT_TEXT', tabId: tab.id })
+        .then((response) => {
+          if (response?.text && response.text.trim().length > 0) {
+            const source = response.source || '';
+            assess({ text: response.text }, settingsRef.current).then((result) => {
+              setLiveAssessment(result);
+              setLiveSource(source);
+              // Also send back to content script so it gets highlights
+              chrome.runtime.sendMessage({
+                type: 'RISK_UPDATE_FROM_PANEL',
+                assessment: { score: result.score, level: result.level, findings: result.findings },
+                tabId: tab.id,
+              }).catch(() => {});
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {}); // Content script may not be on a supported page
+    });
+  }, [model.ort]);
 
   const handleDownloadModel = () => {
     portRef.current?.postMessage({ type: 'DOWNLOAD_MODEL' });
@@ -198,10 +285,10 @@ export default function App() {
 
       <main className="p-4">
         {activeTab === 'dashboard' && (
-          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} />
+          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} />
         )}
-        {activeTab === 'history' && <p className="text-sm text-gray-500">History — coming soon</p>}
-        {activeTab === 'settings' && <p className="text-sm text-gray-500">Settings — coming soon</p>}
+        {activeTab === 'history' && <HistoryPage />}
+        {activeTab === 'settings' && <SettingsPage />}
         {activeTab === 'model' && (
           <ModelStatusPage model={model} onDownload={handleDownloadModel} onReload={handleReloadModel} />
         )}
@@ -212,24 +299,67 @@ export default function App() {
 
 // ── Dashboard with NER Test ──────────────────────────────────────────────────
 
-function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
+function DashboardPage({ model, onDownload, liveAssessment, liveSource, settingsRef, lastLiveTabIdRef }: {
   model: ModelState; onDownload: () => void;
   liveAssessment: RiskAssessment | null; liveSource: string;
+  settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
+  lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
 }) {
   const [testText, setTestText] = useState('');
   const [assessment, setAssessment] = useState<RiskAssessment | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleScan = async () => {
-    if (!testText.trim()) return;
+    if (!testText.trim() && files.length === 0) return;
     setScanning(true);
     try {
-      const result = await assess({ text: testText });
+      const result = await assess({ text: testText, files: files.length > 0 ? files : undefined }, settingsRef.current);
       setAssessment(result);
+      if (result.findings.length > 0) {
+        addHistoryEntry({
+          source: 'manual',
+          score: result.score,
+          level: result.level,
+          findingCount: result.findings.length,
+          findingTypes: [...new Set(result.findings.map((f) => f.type))],
+          breakdown: result.breakdown,
+          computeTimeMs: result.computeTimeMs,
+        }).catch(() => {});
+      }
     } catch (err) {
       console.error('Scan failed:', err);
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setFiles(Array.from(e.target.files));
+    }
+  };
+
+  const removeFile = (idx: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const redactFindings = (findings: Finding[]) => {
+    const mask = (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted';
+    const replacements = findings.map((f) => ({
+      startIndex: f.startIndex,
+      endIndex: f.endIndex,
+      replacement: getMaskText(f, mask),
+    }));
+    const tabId = lastLiveTabIdRef.current;
+    if (tabId) {
+      chrome.runtime.sendMessage({
+        type: 'REDACT_IN_EDITOR',
+        tabId,
+        replacements,
+      }).catch(() => {});
     }
   };
 
@@ -283,7 +413,7 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
         </div>
       )}
 
-      {/* Scan input — always show if model is ready OR if regex can still run */}
+      {/* Scan input — always show */}
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
         <label className="block text-xs font-medium text-gray-500 mb-1">Test PII Detection</label>
         <textarea
@@ -292,9 +422,41 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
           placeholder="Enter text with PII to test... e.g. Ahmad bin Ali IC 901231-14-5678 tinggal di Jalan Ampang"
           className="w-full h-24 text-sm border border-gray-300 dark:border-gray-600 rounded p-2 bg-white dark:bg-gray-700 resize-none"
         />
+
+        {/* File upload */}
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            + Add File
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".txt,.csv,.json,.md,.log,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+            onChange={handleFileChange}
+            className="hidden"
+          />
+          <span className="text-[10px] text-gray-400">PDF, TXT, images</span>
+        </div>
+
+        {files.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {files.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                <span className="truncate max-w-[180px]">{f.name}</span>
+                <span className="text-[10px] text-gray-400">({(f.size / 1024).toFixed(0)} KB)</span>
+                <button onClick={() => removeFile(i)} className="text-red-400 hover:text-red-600 text-xs ml-auto">&times;</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <button
           onClick={handleScan}
-          disabled={scanning || !testText.trim()}
+          disabled={scanning || (!testText.trim() && files.length === 0)}
           className="mt-2 px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
         >
           {scanning ? 'Scanning...' : 'Scan for PII'}
@@ -326,7 +488,17 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
                 <h3 className="text-sm font-semibold">
                   Findings ({displayAssessment.findings.length})
                 </h3>
-                <span className="text-xs text-gray-500">{displayAssessment.computeTimeMs} ms</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500">{displayAssessment.computeTimeMs} ms</span>
+                  {liveAssessment && lastLiveTabIdRef.current && (
+                    <button
+                      onClick={() => redactFindings(displayAssessment.findings)}
+                      className="px-2 py-0.5 text-[10px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-700 rounded hover:bg-red-100 dark:hover:bg-red-900/40"
+                    >
+                      Redact All
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="text-[10px] text-gray-400 mb-2">
                 NER: {displayAssessment.breakdown.nerCount} &middot; Regex: {displayAssessment.breakdown.regexCount} &middot; OCR: {displayAssessment.breakdown.ocrCount}
@@ -346,7 +518,18 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource }: {
                       <span className="font-mono truncate">{f.value}</span>
                       <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{f.source}</span>
                     </div>
-                    <span className="text-gray-400 shrink-0 ml-2">{(f.confidence * 100).toFixed(1)}%</span>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>
+                      {liveAssessment && lastLiveTabIdRef.current && (
+                        <button
+                          onClick={() => redactFindings([f])}
+                          className="px-1.5 py-0.5 text-[10px] text-red-500 hover:text-red-700 border border-gray-200 dark:border-gray-600 rounded hover:border-red-300"
+                          title={`Replace with ${getMaskText(f, (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted')}`}
+                        >
+                          Redact
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -403,6 +586,212 @@ function ModelStatusPage({ model, onDownload, onReload }: { model: ModelState; o
         )}
       </div>
     </div>
+  );
+}
+
+// ── History Page ─────────────────────────────────────────────────────────────
+
+function HistoryPage() {
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getHistory().then((h) => { setEntries(h); setLoading(false); });
+  }, []);
+
+  const handleClear = async () => {
+    await clearHistory();
+    setEntries([]);
+  };
+
+  const levelColor: Record<string, string> = {
+    Safe: 'text-green-600', Caution: 'text-yellow-600', High: 'text-orange-600', Critical: 'text-red-600',
+  };
+
+  if (loading) return <p className="text-sm text-gray-500">Loading...</p>;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <h2 className="text-sm font-semibold">Scan History</h2>
+        {entries.length > 0 && (
+          <button onClick={handleClear} className="text-[10px] text-red-400 hover:text-red-600">Clear All</button>
+        )}
+      </div>
+
+      {entries.length === 0 && (
+        <p className="text-xs text-gray-500">No scans recorded yet. Scan text or browse ChatGPT/Gemini with PII to see history.</p>
+      )}
+
+      <div className="space-y-2">
+        {entries.map((e) => (
+          <div key={e.id} className="bg-white dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+            <div className="flex justify-between items-center mb-1">
+              <div className="flex items-center gap-2">
+                <span className={`text-sm font-bold ${levelColor[e.level] ?? 'text-gray-500'}`}>{e.score}</span>
+                <span className={`text-[10px] font-medium ${levelColor[e.level] ?? 'text-gray-500'}`}>{e.level}</span>
+              </div>
+              <span className="text-[10px] text-gray-400">{formatTime(e.timestamp)}</span>
+            </div>
+            <div className="flex items-center gap-2 text-[10px] text-gray-500">
+              <span className="border border-gray-200 dark:border-gray-600 rounded px-1">{e.source}</span>
+              <span>{e.findingCount} finding{e.findingCount !== 1 ? 's' : ''}</span>
+              <span>&middot;</span>
+              <span>{e.computeTimeMs}ms</span>
+            </div>
+            {e.findingTypes.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {e.findingTypes.map((t) => (
+                  <span key={t} className="text-[10px] bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded px-1.5 py-0.5">{t}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatTime(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  if (diffMs < 60_000) return 'just now';
+  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
+  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// ── Settings Page ────────────────────────────────────────────────────────────
+
+function SettingsPage() {
+  const [settings, setSettings] = useState<GenGuardSettings | null>(null);
+
+  useEffect(() => {
+    chrome.storage.local.get('genguard_settings').then((result) => {
+      const stored = result.genguard_settings;
+      setSettings({
+        enabled: stored?.enabled ?? true,
+        nerConfidenceThreshold: stored?.nerConfidenceThreshold ?? 0.10,
+        enableRegex: stored?.enableRegex ?? true,
+        enableNer: stored?.enableNer ?? true,
+        enableOcr: stored?.enableOcr ?? true,
+        inlineHighlight: {
+          enabled: stored?.inlineHighlight?.enabled ?? true,
+          intensity: stored?.inlineHighlight?.intensity ?? 'normal',
+          redactionMask: stored?.inlineHighlight?.redactionMask ?? 'brackets',
+        },
+      });
+    });
+  }, []);
+
+  const save = (patch: Partial<GenGuardSettings>) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      chrome.storage.local.set({ genguard_settings: next });
+      return next;
+    });
+  };
+
+  const saveHighlight = (patch: Partial<GenGuardSettings['inlineHighlight']>) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, inlineHighlight: { ...prev.inlineHighlight, ...patch } };
+      chrome.storage.local.set({ genguard_settings: next });
+      return next;
+    });
+  };
+
+  if (!settings) return <p className="text-sm text-gray-500">Loading...</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h2 className="text-sm font-semibold mb-3">Detection</h2>
+        <div className="space-y-3">
+          <Toggle label="Enable GenGuard" checked={settings.enabled} onChange={(v) => save({ enabled: v })} />
+          <Toggle label="Regex Detection" checked={settings.enableRegex} onChange={(v) => save({ enableRegex: v })} />
+          <Toggle label="NER Model Detection" checked={settings.enableNer} onChange={(v) => save({ enableNer: v })} />
+          <Toggle label="OCR (Image Text)" checked={settings.enableOcr} onChange={(v) => save({ enableOcr: v })} />
+
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">
+              NER Confidence Threshold: {(settings.nerConfidenceThreshold * 100).toFixed(0)}%
+            </label>
+            <input
+              type="range"
+              min="5" max="90" step="5"
+              value={settings.nerConfidenceThreshold * 100}
+              onChange={(e) => save({ nerConfidenceThreshold: parseInt(e.target.value) / 100 })}
+              className="w-full h-1.5 accent-blue-600"
+            />
+            <div className="flex justify-between text-[10px] text-gray-400">
+              <span>5% (more findings)</span>
+              <span>90% (fewer, higher confidence)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h2 className="text-sm font-semibold mb-3">Inline Highlighting</h2>
+        <div className="space-y-3">
+          <Toggle label="Enable Highlights" checked={settings.inlineHighlight.enabled} onChange={(v) => saveHighlight({ enabled: v })} />
+
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Intensity</label>
+            <select
+              value={settings.inlineHighlight.intensity}
+              onChange={(e) => saveHighlight({ intensity: e.target.value as 'subtle' | 'normal' | 'bold' })}
+              className="w-full text-xs border border-gray-300 dark:border-gray-600 rounded p-1.5 bg-white dark:bg-gray-700"
+            >
+              <option value="subtle">Subtle</option>
+              <option value="normal">Normal</option>
+              <option value="bold">Bold</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Redaction Mask Style</label>
+            <select
+              value={settings.inlineHighlight.redactionMask}
+              onChange={(e) => saveHighlight({ redactionMask: e.target.value as 'brackets' | 'asterisks' | 'redacted' })}
+              className="w-full text-xs border border-gray-300 dark:border-gray-600 rounded p-1.5 bg-white dark:bg-gray-700"
+            >
+              <option value="brackets">[IC_NUMBER]</option>
+              <option value="asterisks">********</option>
+              <option value="redacted">[REDACTED]</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h2 className="text-sm font-semibold mb-3">About</h2>
+        <dl className="space-y-1 text-xs">
+          <Row label="Version" value="0.1.0" />
+          <Row label="Architecture" value="Zero-knowledge (client-side only)" />
+          <Row label="Model" value="piiranha-malaysia (DeBERTa-v3)" />
+          <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center justify-between cursor-pointer">
+      <span className="text-xs text-gray-700 dark:text-gray-300">{label}</span>
+      <div className="relative">
+        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="sr-only" />
+        <div className={`w-9 h-5 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}>
+          <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
+        </div>
+      </div>
+    </label>
   );
 }
 

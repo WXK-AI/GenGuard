@@ -118,11 +118,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     sendResponse({ ok: true });
   } else if (msg.type === 'OPEN_SIDE_PANEL') {
-    // Content script requests to open the side panel
     if (sender.tab?.id) {
       chrome.sidePanel.open({ tabId: sender.tab.id }).catch(() => {});
     }
     sendResponse({ ok: true });
+  } else if (msg.type === 'GET_PROMPT_TEXT') {
+    // Side panel asking for current tab's prompt text — forward to content script
+    const tabId = msg.tabId;
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, { type: 'GET_PROMPT_TEXT' })
+        .then((response) => sendResponse(response))
+        .catch(() => sendResponse({ text: '', source: '' }));
+      return true; // async response
+    }
+    sendResponse({ text: '', source: '' });
+  } else if (msg.type === 'REDACT_IN_EDITOR') {
+    // Side panel requesting redaction in the content script editor
+    const tabId = msg.tabId;
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'REDACT_IN_EDITOR',
+        replacements: msg.replacements,
+      }).then((response) => sendResponse(response))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+    }
+    sendResponse({ ok: false });
   }
   return false;
 });
