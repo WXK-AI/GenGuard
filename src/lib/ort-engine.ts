@@ -14,6 +14,22 @@ import { NER_MODEL_CONTRACT } from '../core/detectors/ner-model-contract';
 
 let session: ort.InferenceSession | null = null;
 let _initialized = false;
+let _envConfigured = false;
+
+/**
+ * Configure the global ORT WASM env exactly once, before any session is
+ * created (NER or OCR). Safe to call multiple times.
+ */
+export function ensureOrtEnv() {
+  if (_envConfigured) return;
+  const basePath = chrome.runtime.getURL('ort/');
+  ort.env.wasm.wasmPaths = basePath;
+  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.simd = true;
+  ort.env.wasm.proxy = false;
+  ort.env.logLevel = 'warning';
+  _envConfigured = true;
+}
 
 export type OrtStatus = 'not_loaded' | 'loading' | 'ready' | 'error';
 export type StatusCallback = (status: OrtStatus, error?: string) => void;
@@ -30,14 +46,7 @@ export async function initSession(
 
   try {
     onStatus?.('loading');
-
-    // Point to extension-bundled WASM files
-    const basePath = chrome.runtime.getURL('ort/');
-    ort.env.wasm.wasmPaths = basePath;
-    ort.env.wasm.numThreads = 1;
-    ort.env.wasm.simd = true;
-    ort.env.wasm.proxy = false;
-    ort.env.logLevel = 'warning';
+    ensureOrtEnv();
 
     const t0 = performance.now();
 

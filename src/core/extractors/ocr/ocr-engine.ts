@@ -9,7 +9,7 @@
  * WASM backend is already configured.
  */
 
-import { ort } from '../../../lib/ort-engine';
+import { ort, ensureOrtEnv } from '../../../lib/ort-engine';
 import { OCR_MODEL_CONTRACT } from './ocr-contract';
 import { parseDict } from './ctc-decode';
 
@@ -28,6 +28,10 @@ export async function initOcrSessions(
   dictText: string,
 ): Promise<void> {
   if (detSession && recSession) return;
+
+  // Configure ORT WASM env BEFORE creating sessions (proxy off, threads=1).
+  // Without this, ORT spawns a proxy worker that touches `document` and crashes.
+  ensureOrtEnv();
 
   const sessionOptions: ort.InferenceSession.SessionOptions = {
     executionProviders: ['wasm'],

@@ -71,10 +71,17 @@ async function classifyChunk(encoded: EncodeResult): Promise<Array<{
 
 /**
  * Step 1: Build word-level predictions.
- * Each word (unique wordId) gets:
- *   - label + confidence from its FIRST subword
- *   - startOffset from its first subword, endOffset from its LAST subword
- * This ensures multi-subword entities like "901231-14-5678" get full spans.
+ * Each word (unique wordId) aggregates ALL of its subwords:
+ *   - For each label seen across the word's subwords, sum their confidences
+ *   - Pick the label with the highest summed confidence as the word's label
+ *   - The word's confidence = max subword confidence for that winning label
+ *     (more discriminating than averaging across all subwords, which dilutes
+ *     strong evidence with weak continuation tokens)
+ *   - startOffset from the first subword, endOffset from the last subword
+ *
+ * This is more accurate than the previous "first subword wins" approach,
+ * which tended to mislabel words whose first subword was an ambiguous prefix
+ * (e.g. "Ahmad" tokenized as "▁Ah" + "mad" — "▁Ah" alone is uninformative).
  */
 interface WordPrediction {
   wordId: number;
@@ -84,11 +91,19 @@ interface WordPrediction {
   endOffset: number;
 }
 
+interface WordAccumulator {
+  wordId: number;
+  startOffset: number;
+  endOffset: number;
+  // labelScores[label] = { sumConf, maxConf } across all subwords of this word
+  labelScores: Map<string, { sumConf: number; maxConf: number }>;
+}
+
 function buildWordPredictions(
   predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
   encoded: EncodeResult,
 ): WordPrediction[] {
-  const wordMap = new Map<number, WordPrediction>();
+  const wordMap = new Map<number, WordAccumulator>();
 
   for (let i = 0; i < predictions.length; i++) {
     const { wordId, label, confidence } = predictions[i];
@@ -96,18 +111,55 @@ function buildWordPredictions(
 
     const [start, end] = encoded.offsets[i];
 
-    if (!wordMap.has(wordId)) {
-      // First subword of this word — use its label
-      wordMap.set(wordId, { wordId, label, confidence, startOffset: start, endOffset: end });
+    let acc = wordMap.get(wordId);
+    if (!acc) {
+      acc = {
+        wordId,
+        startOffset: start,
+        endOffset: end,
+        labelScores: new Map(),
+      };
+      wordMap.set(wordId, acc);
     } else {
-      // Subsequent subword — extend the end offset
-      const wp = wordMap.get(wordId)!;
-      if (end > wp.endOffset) wp.endOffset = end;
+      if (start < acc.startOffset) acc.startOffset = start;
+      if (end > acc.endOffset) acc.endOffset = end;
+    }
+
+    const existing = acc.labelScores.get(label);
+    if (existing) {
+      existing.sumConf += confidence;
+      if (confidence > existing.maxConf) existing.maxConf = confidence;
+    } else {
+      acc.labelScores.set(label, { sumConf: confidence, maxConf: confidence });
     }
   }
 
+  // Resolve each accumulator into a single WordPrediction by picking the
+  // label with the highest summed confidence (== majority-vote weighted by
+  // model confidence). Use the max subword confidence for that winning label.
+  const out: WordPrediction[] = [];
+  for (const acc of wordMap.values()) {
+    let bestLabel = 'O';
+    let bestSum = -Infinity;
+    let bestMax = 0;
+    for (const [label, score] of acc.labelScores) {
+      if (score.sumConf > bestSum) {
+        bestSum = score.sumConf;
+        bestLabel = label;
+        bestMax = score.maxConf;
+      }
+    }
+    out.push({
+      wordId: acc.wordId,
+      label: bestLabel,
+      confidence: bestMax,
+      startOffset: acc.startOffset,
+      endOffset: acc.endOffset,
+    });
+  }
+
   // Return sorted by wordId (preserves order)
-  return Array.from(wordMap.values()).sort((a, b) => a.wordId - b.wordId);
+  return out.sort((a, b) => a.wordId - b.wordId);
 }
 
 /**
