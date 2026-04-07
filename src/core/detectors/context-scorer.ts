@@ -2,8 +2,14 @@
  * Context Scorer — converts raw findings into a risk assessment.
  *
  * Score formula: Σ weight(severity) × max(confidence) × log2(1 + count)
- * Deduplication: same (type, startIndex, endIndex) counted once; if both
- * regex and NER match the same span, keep the higher-confidence one.
+ *
+ * Deduplication strategy (overlap-aware):
+ *   1. Sort findings by startIndex.
+ *   2. Walk through; when two findings overlap:
+ *        - NER always beats regex (it's contextually smarter).
+ *        - Within the same source, higher confidence wins.
+ *        - If confidence is equal, the longer span wins (more specific).
+ *   3. Non-overlapping findings are all kept.
  */
 
 import type { Finding, RiskAssessment } from '../types';
@@ -16,21 +22,67 @@ const SEVERITY_WEIGHTS: Record<string, number> = {
 };
 
 /**
- * Deduplicate findings: for overlapping spans of the same type,
- * keep the one with higher confidence.
+ * Check whether two findings' character spans overlap.
+ */
+function spans_overlap(a: Finding, b: Finding): boolean {
+  return a.startIndex < b.endIndex && b.startIndex < a.endIndex;
+}
+
+/**
+ * Given two overlapping findings, return the one to keep.
+ *
+ * Priority order:
+ *   1. NER > regex  (model is contextually aware)
+ *   2. Higher confidence
+ *   3. Longer span  (more specific detection)
+ */
+function pickWinner(a: Finding, b: Finding): Finding {
+  // NER beats regex
+  if (a.source === 'ner' && b.source === 'regex') return a;
+  if (b.source === 'ner' && a.source === 'regex') return b;
+
+  // Same source → higher confidence
+  if (a.confidence !== b.confidence) {
+    return a.confidence > b.confidence ? a : b;
+  }
+
+  // Same confidence → longer span
+  const aLen = a.endIndex - a.startIndex;
+  const bLen = b.endIndex - b.startIndex;
+  return aLen >= bLen ? a : b;
+}
+
+/**
+ * Overlap-aware deduplication.
+ *
+ * Sorts by startIndex, then greedily resolves overlaps by keeping the
+ * winner (per pickWinner) and discarding the loser. This is a single-pass
+ * O(n log n) algorithm that handles chains of overlapping findings.
  */
 function dedup(findings: Finding[]): Finding[] {
-  const map = new Map<string, Finding>();
+  if (findings.length <= 1) return findings;
 
-  for (const f of findings) {
-    const key = `${f.type}:${f.startIndex}:${f.endIndex}`;
-    const existing = map.get(key);
-    if (!existing || f.confidence > existing.confidence) {
-      map.set(key, f);
+  // Sort by startIndex, then by endIndex descending (longer span first)
+  const sorted = [...findings].sort((a, b) => {
+    if (a.startIndex !== b.startIndex) return a.startIndex - b.startIndex;
+    return b.endIndex - a.endIndex;
+  });
+
+  const kept: Finding[] = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const current = sorted[i];
+    const last = kept[kept.length - 1];
+
+    if (spans_overlap(last, current)) {
+      // Replace last with winner
+      kept[kept.length - 1] = pickWinner(last, current);
+    } else {
+      kept.push(current);
     }
   }
 
-  return Array.from(map.values());
+  return kept;
 }
 
 /**

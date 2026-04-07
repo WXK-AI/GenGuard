@@ -33,7 +33,8 @@
       "label": "Bank Account Number",
       "regex": "\\b\\d{10,18}\\b",
       "severity": "critical",
-      "flags": "g"
+      "flags": "g",
+      "contextRequired": true
     },
     {
       "name": "CREDIT_CARD",

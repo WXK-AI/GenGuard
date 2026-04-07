@@ -19,6 +19,9 @@ interface PatternDef {
 /** Context keywords that must appear near a postcode for it to be flagged. */
 const POSTCODE_CONTEXT = /\b(?:poskod|postcode|zip|kod\s?pos|alamat|address)\b/i;
 
+/** Context keywords for bank account numbers. */
+const BANK_CONTEXT = /\b(?:akaun|account|bank|acc|transfer|bayaran|payment|remit|wire|deposit|kredit|debit|simpanan|savings|semasa|current)\b/i;
+
 /** Luhn checksum validation for credit card numbers. */
 function luhnCheck(digits: string): boolean {
   const nums = digits.replace(/[-\s]/g, '');
@@ -76,12 +79,13 @@ export function detectRegex(text: string): { findings: Finding[]; timeMs: number
       const startIndex = match.index;
       const endIndex = startIndex + value.length;
 
-      // Context check for postcodes — skip if no address context nearby
+      // Context check — skip if required keywords aren't nearby
       if (pattern.contextRequired) {
         const windowStart = Math.max(0, startIndex - 80);
         const windowEnd = Math.min(text.length, endIndex + 80);
         const context = text.slice(windowStart, windowEnd);
-        if (!POSTCODE_CONTEXT.test(context)) continue;
+        const contextRegex = pattern.name === 'BANK_ACCT' ? BANK_CONTEXT : POSTCODE_CONTEXT;
+        if (!contextRegex.test(context)) continue;
       }
 
       // Luhn validation for credit cards

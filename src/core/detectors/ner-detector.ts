@@ -1,5 +1,12 @@
 /**
  * NER Detector — tokenize text, run ORT inference, merge BIO tags into entity spans.
+ *
+ * BIO merging mirrors HuggingFace's `aggregation_strategy="simple"`:
+ *   - Each subword token gets its own argmax label + softmax confidence.
+ *   - Consecutive tokens with the same base entity type are merged into one span,
+ *     UNLESS the new token carries a B- prefix (which forces a new entity).
+ *   - Entity score = mean of all constituent token scores.
+ *   - Entity text  = originalText.slice(firstStart, lastEnd).
  */
 
 import { DeBERTaTokenizer, type EncodeResult } from '../tokenizer/sentencepiece-tokenizer';
@@ -69,101 +76,36 @@ async function classifyChunk(encoded: EncodeResult): Promise<Array<{
   return predictions;
 }
 
+// ── HF-compatible BIO merging (simple strategy) ─────────────────────────────
+
 /**
- * Step 1: Build word-level predictions.
- * Each word (unique wordId) aggregates ALL of its subwords:
- *   - For each label seen across the word's subwords, sum their confidences
- *   - Pick the label with the highest summed confidence as the word's label
- *   - The word's confidence = max subword confidence for that winning label
- *     (more discriminating than averaging across all subwords, which dilutes
- *     strong evidence with weak continuation tokens)
- *   - startOffset from the first subword, endOffset from the last subword
- *
- * This is more accurate than the previous "first subword wins" approach,
- * which tended to mislabel words whose first subword was an ambiguous prefix
- * (e.g. "Ahmad" tokenized as "▁Ah" + "mad" — "▁Ah" alone is uninformative).
+ * Parse a BIO label into its prefix (B/I) and base tag.
+ * Labels without B-/I- prefix are treated as I- (continuation) to match
+ * HuggingFace's get_tag() behaviour.
  */
-interface WordPrediction {
-  wordId: number;
+function getTag(label: string): { bi: string; tag: string } {
+  if (label.startsWith('B-')) return { bi: 'B', tag: label.slice(2) };
+  if (label.startsWith('I-')) return { bi: 'I', tag: label.slice(2) };
+  return { bi: 'I', tag: label };
+}
+
+interface TokenPred {
   label: string;
   confidence: number;
-  startOffset: number;
-  endOffset: number;
-}
-
-interface WordAccumulator {
-  wordId: number;
-  startOffset: number;
-  endOffset: number;
-  // labelScores[label] = { sumConf, maxConf } across all subwords of this word
-  labelScores: Map<string, { sumConf: number; maxConf: number }>;
-}
-
-function buildWordPredictions(
-  predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
-  encoded: EncodeResult,
-): WordPrediction[] {
-  const wordMap = new Map<number, WordAccumulator>();
-
-  for (let i = 0; i < predictions.length; i++) {
-    const { wordId, label, confidence } = predictions[i];
-    if (wordId === null) continue;
-
-    const [start, end] = encoded.offsets[i];
-
-    let acc = wordMap.get(wordId);
-    if (!acc) {
-      acc = {
-        wordId,
-        startOffset: start,
-        endOffset: end,
-        labelScores: new Map(),
-      };
-      wordMap.set(wordId, acc);
-    } else {
-      if (start < acc.startOffset) acc.startOffset = start;
-      if (end > acc.endOffset) acc.endOffset = end;
-    }
-
-    const existing = acc.labelScores.get(label);
-    if (existing) {
-      existing.sumConf += confidence;
-      if (confidence > existing.maxConf) existing.maxConf = confidence;
-    } else {
-      acc.labelScores.set(label, { sumConf: confidence, maxConf: confidence });
-    }
-  }
-
-  // Resolve each accumulator into a single WordPrediction by picking the
-  // label with the highest summed confidence (== majority-vote weighted by
-  // model confidence). Use the max subword confidence for that winning label.
-  const out: WordPrediction[] = [];
-  for (const acc of wordMap.values()) {
-    let bestLabel = 'O';
-    let bestSum = -Infinity;
-    let bestMax = 0;
-    for (const [label, score] of acc.labelScores) {
-      if (score.sumConf > bestSum) {
-        bestSum = score.sumConf;
-        bestLabel = label;
-        bestMax = score.maxConf;
-      }
-    }
-    out.push({
-      wordId: acc.wordId,
-      label: bestLabel,
-      confidence: bestMax,
-      startOffset: acc.startOffset,
-      endOffset: acc.endOffset,
-    });
-  }
-
-  // Return sorted by wordId (preserves order)
-  return out.sort((a, b) => a.wordId - b.wordId);
+  start: number;
+  end: number;
 }
 
 /**
- * Step 2: BIO merge on word-level predictions.
+ * BIO merge that mirrors HuggingFace's `aggregation_strategy="simple"`.
+ *
+ * Key behaviour (matches HF `group_entities`):
+ *   - Works at the raw SUBWORD token level (no pre-grouping into words).
+ *   - Each subword already carries its own argmax label + confidence.
+ *   - Consecutive tokens with the same base entity type are merged,
+ *     UNLESS the new token carries a B- prefix (which forces a split).
+ *   - Entity score = mean of all constituent token scores.
+ *   - Entity text  = originalText.slice(firstStart, lastEnd).
  */
 function mergeEntities(
   predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
@@ -171,81 +113,85 @@ function mergeEntities(
   originalText: string,
   confidenceThreshold: number,
 ): Finding[] {
-  const words = buildWordPredictions(predictions, encoded);
   const findings: Finding[] = [];
 
-  let currentEntity: {
-    type: string;
-    startOffset: number;
-    endOffset: number;
-    confidences: number[];
-  } | null = null;
+  // Collect non-special tokens with their offsets
+  const tokenPreds: TokenPred[] = [];
 
-  for (const wp of words) {
-    const { label, confidence, startOffset, endOffset } = wp;
+  for (let i = 0; i < predictions.length; i++) {
+    const { wordId, label, confidence } = predictions[i];
+    // Skip special tokens ([CLS], [SEP], [PAD])
+    if (wordId === null) continue;
 
-    if (label.startsWith('B-')) {
-      if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-      currentEntity = {
-        type: label.slice(2),
-        startOffset,
-        endOffset,
-        confidences: [confidence],
-      };
-    } else if (label.startsWith('I-')) {
-      const entityType = label.slice(2);
-      if (currentEntity && entityType === currentEntity.type) {
-        // Extend current entity
-        currentEntity.endOffset = endOffset;
-        currentEntity.confidences.push(confidence);
-      } else {
-        // I-X without matching B-X or type mismatch — start new entity
-        if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-        currentEntity = {
-          type: entityType,
-          startOffset,
-          endOffset,
-          confidences: [confidence],
-        };
+    const [start, end] = encoded.offsets[i];
+
+    // O labels still need to break entity groups
+    if (label === 'O') {
+      tokenPreds.push({ label: 'O', confidence: 0, start: 0, end: 0 });
+      continue;
+    }
+
+    tokenPreds.push({ label, confidence, start, end });
+  }
+
+  // Group consecutive tokens following HF simple rules
+  let group: TokenPred[] = [];
+
+  const flushGroup = () => {
+    if (group.length === 0) return;
+
+    // Derive entity type from the first token in the group
+    const { tag } = getTag(group[0].label);
+    const avgScore = group.reduce((s, t) => s + t.confidence, 0) / group.length;
+
+    if (avgScore >= confidenceThreshold) {
+      const startOffset = group[0].start;
+      const endOffset = group[group.length - 1].end;
+      const value = originalText.slice(startOffset, endOffset);
+
+      if (value.trim().length > 0) {
+        const severity = NER_MODEL_CONTRACT.severityMap[tag as NEREntityType] ?? 'medium';
+        findings.push({
+          type: tag,
+          value,
+          startIndex: startOffset,
+          endIndex: endOffset,
+          confidence: Math.round(avgScore * 1000) / 1000,
+          severity,
+          source: 'ner',
+        });
       }
+    }
+
+    group = [];
+  };
+
+  for (const tp of tokenPreds) {
+    if (tp.label === 'O') {
+      flushGroup();
+      continue;
+    }
+
+    const { bi, tag } = getTag(tp.label);
+
+    if (group.length === 0) {
+      // Start a new group
+      group.push(tp);
     } else {
-      // O label
-      if (currentEntity) {
-        pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-        currentEntity = null;
+      const { tag: lastTag } = getTag(group[group.length - 1].label);
+      // Merge if same entity type AND current token is NOT B- (HF line 617)
+      if (tag === lastTag && bi !== 'B') {
+        group.push(tp);
+      } else {
+        // Different type or new B- boundary → flush and start new group
+        flushGroup();
+        group.push(tp);
       }
     }
   }
 
-  if (currentEntity) pushEntity(currentEntity, findings, originalText, confidenceThreshold);
-
+  flushGroup();
   return findings;
-}
-
-function pushEntity(
-  entity: { type: string; startOffset: number; endOffset: number; confidences: number[] },
-  findings: Finding[],
-  originalText: string,
-  confidenceThreshold: number,
-): void {
-  const avgConfidence = entity.confidences.reduce((a, b) => a + b, 0) / entity.confidences.length;
-
-  if (avgConfidence < confidenceThreshold) return;
-
-  const value = originalText.slice(entity.startOffset, entity.endOffset);
-  if (value.trim().length === 0) return;
-
-  const severity = NER_MODEL_CONTRACT.severityMap[entity.type as NEREntityType] ?? 'medium';
-
-  findings.push({
-    type: entity.type,
-    value,
-    startIndex: entity.startOffset,
-    endIndex: entity.endOffset,
-    confidence: Math.round(avgConfidence * 1000) / 1000,
-    severity,
-    source: 'ner',
-  });
 }
 
 /**
