@@ -76,12 +76,10 @@ async function classifyChunk(encoded: EncodeResult): Promise<Array<{
   return predictions;
 }
 
-// ── HF-compatible BIO merging (simple strategy) ─────────────────────────────
+// ── Word-level aggregation + BIO merging ────────────────────────────────────
 
 /**
  * Parse a BIO label into its prefix (B/I) and base tag.
- * Labels without B-/I- prefix are treated as I- (continuation) to match
- * HuggingFace's get_tag() behaviour.
  */
 function getTag(label: string): { bi: string; tag: string } {
   if (label.startsWith('B-')) return { bi: 'B', tag: label.slice(2) };
@@ -89,23 +87,100 @@ function getTag(label: string): { bi: string; tag: string } {
   return { bi: 'I', tag: label };
 }
 
-interface TokenPred {
-  label: string;
+interface WordPred {
+  wordId: number;
+  label: string;   // best non-O label (or 'O')
   confidence: number;
-  start: number;
+  start: number;    // char offset in original text
   end: number;
 }
 
 /**
- * BIO merge that mirrors HuggingFace's `aggregation_strategy="simple"`.
+ * Step 1: Aggregate subword predictions → one prediction per word.
  *
- * Key behaviour (matches HF `group_entities`):
- *   - Works at the raw SUBWORD token level (no pre-grouping into words).
- *   - Each subword already carries its own argmax label + confidence.
- *   - Consecutive tokens with the same base entity type are merged,
- *     UNLESS the new token carries a B- prefix (which forces a split).
- *   - Entity score = mean of all constituent token scores.
- *   - Entity text  = originalText.slice(firstStart, lastEnd).
+ * For each wordId, collect all subword labels. Pick the dominant non-O label
+ * (by summed confidence). If no non-O label, the word is O. The word's
+ * confidence = max confidence among subwords that voted for the winning label.
+ * The word's char span covers all its subwords.
+ */
+function aggregateToWords(
+  predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
+  encoded: EncodeResult,
+): WordPred[] {
+  const wordMap = new Map<number, {
+    start: number;
+    end: number;
+    labelScores: Map<string, { sum: number; max: number; bi: string }>;
+  }>();
+
+  for (let i = 0; i < predictions.length; i++) {
+    const { wordId, label, confidence } = predictions[i];
+    if (wordId === null) continue;
+
+    const [start, end] = encoded.offsets[i];
+
+    let acc = wordMap.get(wordId);
+    if (!acc) {
+      acc = { start, end, labelScores: new Map() };
+      wordMap.set(wordId, acc);
+    } else {
+      if (start < acc.start) acc.start = start;
+      if (end > acc.end) acc.end = end;
+    }
+
+    // Track scores per base tag (strip B-/I- prefix for grouping)
+    const { bi, tag } = getTag(label);
+    const key = label === 'O' ? 'O' : tag;
+    const existing = acc.labelScores.get(key);
+    if (existing) {
+      existing.sum += confidence;
+      if (confidence > existing.max) existing.max = confidence;
+      // Keep the first B- prefix seen for this tag
+    } else {
+      acc.labelScores.set(key, { sum: confidence, max: confidence, bi });
+    }
+  }
+
+  // Convert to sorted array
+  const words: WordPred[] = [];
+  for (const [wordId, acc] of wordMap) {
+    // Pick best non-O label by summed confidence
+    let bestTag = 'O';
+    let bestSum = -Infinity;
+    let bestMax = 0;
+    let bestBi = 'B';
+    for (const [tag, score] of acc.labelScores) {
+      if (tag === 'O') continue;
+      if (score.sum > bestSum) {
+        bestSum = score.sum;
+        bestTag = tag;
+        bestMax = score.max;
+        bestBi = score.bi;
+      }
+    }
+
+    if (bestTag === 'O') {
+      words.push({ wordId, label: 'O', confidence: 0, start: acc.start, end: acc.end });
+    } else {
+      words.push({
+        wordId,
+        label: `${bestBi}-${bestTag}`,
+        confidence: bestMax,
+        start: acc.start,
+        end: acc.end,
+      });
+    }
+  }
+
+  return words.sort((a, b) => a.wordId - b.wordId);
+}
+
+/**
+ * Step 2: BIO merge on word-level predictions → entity spans.
+ *
+ * Consecutive words with the same base entity type are merged into one Finding.
+ * A B- prefix forces a new entity. Adjacent same-type words (even if both B-)
+ * are merged when separated only by whitespace.
  */
 function mergeEntities(
   predictions: Array<{ wordId: number | null; label: string; confidence: number }>,
@@ -113,36 +188,16 @@ function mergeEntities(
   originalText: string,
   confidenceThreshold: number,
 ): Finding[] {
+  const words = aggregateToWords(predictions, encoded);
   const findings: Finding[] = [];
 
-  // Collect non-special tokens with their offsets
-  const tokenPreds: TokenPred[] = [];
-
-  for (let i = 0; i < predictions.length; i++) {
-    const { wordId, label, confidence } = predictions[i];
-    // Skip special tokens ([CLS], [SEP], [PAD])
-    if (wordId === null) continue;
-
-    const [start, end] = encoded.offsets[i];
-
-    // O labels still need to break entity groups
-    if (label === 'O') {
-      tokenPreds.push({ label: 'O', confidence: 0, start: 0, end: 0 });
-      continue;
-    }
-
-    tokenPreds.push({ label, confidence, start, end });
-  }
-
-  // Group consecutive tokens following HF simple rules
-  let group: TokenPred[] = [];
+  let group: WordPred[] = [];
 
   const flushGroup = () => {
     if (group.length === 0) return;
 
-    // Derive entity type from the first token in the group
     const { tag } = getTag(group[0].label);
-    const avgScore = group.reduce((s, t) => s + t.confidence, 0) / group.length;
+    const avgScore = group.reduce((s, w) => s + w.confidence, 0) / group.length;
 
     if (avgScore >= confidenceThreshold) {
       const startOffset = group[0].start;
@@ -162,30 +217,29 @@ function mergeEntities(
         });
       }
     }
-
     group = [];
   };
 
-  for (const tp of tokenPreds) {
-    if (tp.label === 'O') {
+  for (const wp of words) {
+    if (wp.label === 'O') {
       flushGroup();
       continue;
     }
 
-    const { bi, tag } = getTag(tp.label);
+    const { bi, tag } = getTag(wp.label);
 
     if (group.length === 0) {
-      // Start a new group
-      group.push(tp);
+      group.push(wp);
     } else {
       const { tag: lastTag } = getTag(group[group.length - 1].label);
-      // Merge if same entity type AND current token is NOT B- (HF line 617)
-      if (tag === lastTag && bi !== 'B') {
-        group.push(tp);
+
+      if (tag === lastTag) {
+        // Same type — merge regardless of B/I prefix
+        // (model often emits B- for every word in a multi-word name)
+        group.push(wp);
       } else {
-        // Different type or new B- boundary → flush and start new group
         flushGroup();
-        group.push(tp);
+        group.push(wp);
       }
     }
   }
@@ -195,9 +249,56 @@ function mergeEntities(
 }
 
 /**
+ * Merge adjacent findings of the same type when they are separated only by
+ * whitespace (or directly adjacent).  This handles the common case where the
+ * model emits B-PERSON for every word in a multi-word name instead of using
+ * I-PERSON continuations.
+ */
+function mergeAdjacentFindings(findings: Finding[], originalText: string): Finding[] {
+  if (findings.length <= 1) return findings;
+
+  const merged: Finding[] = [findings[0]];
+  for (let i = 1; i < findings.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = findings[i];
+
+    // Same entity type AND the gap between them is only whitespace (or no gap)
+    const gap = originalText.slice(prev.endIndex, curr.startIndex);
+    if (curr.type === prev.type && /^\s*$/.test(gap)) {
+      // Compute weighted average BEFORE extending
+      const prevLen = prev.value.length;
+      const currLen = curr.value.length;
+      const totalLen = prevLen + currLen;
+      prev.confidence = totalLen > 0
+        ? Math.round(((prev.confidence * prevLen + curr.confidence * currLen) / totalLen) * 1000) / 1000
+        : prev.confidence;
+      // Extend the previous finding
+      prev.endIndex = curr.endIndex;
+      prev.value = originalText.slice(prev.startIndex, prev.endIndex);
+    } else {
+      merged.push(curr);
+    }
+  }
+  return merged;
+}
+
+// ── Sliding window constants ────────────────────────────────────────────────
+
+/** Usable tokens per chunk after [CLS] and [SEP]. */
+const USABLE = SEQ_LEN - 2;
+/** Overlap in tokens between consecutive windows. */
+const STRIDE_OVERLAP = 48;
+/** Advance per window. */
+const STRIDE = USABLE - STRIDE_OVERLAP;
+
+/** Yield to the event loop so the UI stays responsive during long scans. */
+const yieldToUI = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+/**
  * Run full NER detection on a text string.
  *
- * For texts longer than ~240 tokens, uses a sliding window with overlap.
+ * For texts longer than one chunk, uses a sliding window with overlap so
+ * that no token is left unprocessed.
  */
 export async function detectNER(
   text: string,
@@ -209,14 +310,76 @@ export async function detectNER(
 
   const t0 = performance.now();
 
-  // For short texts (most common case), single-pass
-  const encoded = tokenizer.encode(text, SEQ_LEN);
-  const predictions = await classifyChunk(encoded);
+  // Tokenize with a large limit to count real tokens without truncation
+  const fullEncoded = tokenizer.encode(text, SEQ_LEN);
+  // If the tokenizer filled all USABLE slots, the text was likely truncated
+  const realTokenCount = fullEncoded.wordIds.filter(w => w !== null).length;
+  const needsSliding = realTokenCount >= USABLE;
 
-  const findings = mergeEntities(predictions, encoded, text, confidenceThreshold);
+  // Short text → single pass (most common case)
+  if (!needsSliding) {
+    const predictions = await classifyChunk(fullEncoded);
+    let findings = mergeEntities(predictions, fullEncoded, text, confidenceThreshold);
+    findings = mergeAdjacentFindings(findings, text);
+    const timeMs = Math.round(performance.now() - t0);
+    console.log(`[GenGuard NER] ${text.length} chars → ${findings.length} findings in ${timeMs} ms`);
+    return { findings, timeMs };
+  }
+
+  // Long text → sliding window over the raw text
+  console.log(`[GenGuard NER] Long text (${text.length} chars, ≥${USABLE} tokens) — using sliding window`);
+  const allFindings: Finding[] = [];
+  const seenSpans = new Set<string>();
+  let charStart = 0;
+  let windowCount = 0;
+
+  while (charStart < text.length) {
+    // Take a generous char slice; the tokenizer will truncate to SEQ_LEN
+    const charEnd = Math.min(text.length, charStart + USABLE * 5);
+    const chunk = text.slice(charStart, charEnd);
+
+    const encoded = tokenizer.encode(chunk, SEQ_LEN);
+    const predictions = await classifyChunk(encoded);
+    const chunkFindings = mergeEntities(predictions, encoded, chunk, confidenceThreshold);
+    windowCount++;
+
+    // Yield every 4 windows so the UI stays responsive
+    if (windowCount % 4 === 0) await yieldToUI();
+
+    // Adjust offsets back to the original text and dedupe
+    for (const f of chunkFindings) {
+      f.startIndex += charStart;
+      f.endIndex += charStart;
+      f.value = text.slice(f.startIndex, f.endIndex);
+      const spanKey = `${f.type}:${f.startIndex}:${f.endIndex}`;
+      if (!seenSpans.has(spanKey)) {
+        seenSpans.add(spanKey);
+        allFindings.push(f);
+      }
+    }
+
+    // Advance: figure out how many chars the first STRIDE tokens covered
+    let tokIdx = 0;
+    let lastCharEnd = 0;
+    for (let i = 0; i < encoded.offsets.length; i++) {
+      if (encoded.wordIds[i] === null) continue;
+      tokIdx++;
+      if (tokIdx >= STRIDE) {
+        lastCharEnd = encoded.offsets[i][1];
+        break;
+      }
+    }
+
+    if (lastCharEnd <= 0 || charStart + lastCharEnd >= text.length) break;
+    charStart += lastCharEnd;
+  }
+
+  // Sort by position and merge adjacent same-type
+  allFindings.sort((a, b) => a.startIndex - b.startIndex);
+  const findings = mergeAdjacentFindings(allFindings, text);
 
   const timeMs = Math.round(performance.now() - t0);
-  console.log(`[GenGuard NER] ${text.length} chars → ${findings.length} findings in ${timeMs} ms`);
+  console.log(`[GenGuard NER] ${text.length} chars → ${findings.length} findings in ${timeMs} ms (${windowCount} windows)`);
 
   return { findings, timeMs };
 }

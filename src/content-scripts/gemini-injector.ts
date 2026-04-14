@@ -20,6 +20,8 @@ let lastSentText = '';
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
+let watchedFileInputs = new WeakSet<HTMLInputElement>();
+let pendingFiles: Array<{ name: string; type: string; data: number[] }> = [];
 
 // ── Settings (live-synced from chrome.storage) ───────────────��───────────────
 
@@ -71,6 +73,61 @@ chrome.storage.onChanged.addListener((changes, area) => {
     sendIfChanged();
   }
 });
+
+// ── File Interception ────────────────────────────────────────────────────────
+
+const SCANNABLE_TYPES = /\.(pdf|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
+const SCANNABLE_MIME = /^(application\/pdf|text\/|image\/)/;
+
+function isScannableFile(file: File): boolean {
+  return SCANNABLE_MIME.test(file.type) || SCANNABLE_TYPES.test(file.name);
+}
+
+async function serializeFiles(files: File[]): Promise<Array<{ name: string; type: string; data: number[] }>> {
+  const results: Array<{ name: string; type: string; data: number[] }> = [];
+  for (const file of files) {
+    if (!isScannableFile(file)) continue;
+    const buf = await file.arrayBuffer();
+    results.push({ name: file.name, type: file.type, data: Array.from(new Uint8Array(buf)) });
+  }
+  return results;
+}
+
+function sendFilesForAssessment(serialized: Array<{ name: string; type: string; data: number[] }>) {
+  if (serialized.length === 0) return;
+  pendingFiles = serialized;
+  console.log(`[GenGuard] Intercepted ${serialized.length} file(s) for scanning`);
+  chrome.runtime.sendMessage({
+    type: 'ASSESS_FILES',
+    files: serialized,
+    source: 'gemini',
+  }).catch(() => {});
+}
+
+function handleFileInputChange(e: Event) {
+  if (!settings.enabled) return;
+  const input = e.target as HTMLInputElement;
+  if (!input.files || input.files.length === 0) return;
+  const files = Array.from(input.files).filter(isScannableFile);
+  if (files.length === 0) return;
+  serializeFiles(files).then(sendFilesForAssessment);
+}
+
+function handlePasteWithFiles(e: ClipboardEvent) {
+  if (!settings.enabled || !e.clipboardData) return;
+  const files: File[] = [];
+  for (const item of e.clipboardData.items) {
+    const file = item.getAsFile();
+    if (file && isScannableFile(file)) files.push(file);
+  }
+  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+}
+
+function handleDropWithFiles(e: DragEvent) {
+  if (!settings.enabled || !e.dataTransfer) return;
+  const files = Array.from(e.dataTransfer.files).filter(isScannableFile);
+  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+}
 
 // ── Communication ─��────────────────────────────��─────────────────────────────
 
@@ -326,6 +383,9 @@ function attach(el: HTMLElement) {
   el.addEventListener('cut', scheduleAssessment);
   el.addEventListener('focus', scheduleAssessment);
 
+  // File interception (paste on editor — drops handled at document level)
+  el.addEventListener('paste', handlePasteWithFiles as EventListener);
+
   startPolling();
 
   el.addEventListener('keydown', interceptKeydown, { capture: true });
@@ -360,6 +420,7 @@ function detach() {
     currentEditor.removeEventListener('paste', scheduleAssessment);
     currentEditor.removeEventListener('cut', scheduleAssessment);
     currentEditor.removeEventListener('focus', scheduleAssessment);
+    currentEditor.removeEventListener('paste', handlePasteWithFiles as EventListener);
     currentEditor.removeEventListener('keydown', interceptKeydown, true);
     currentEditor = null;
   }
@@ -395,6 +456,42 @@ const observer = new MutationObserver(() => {
       sendBtn.addEventListener('click', interceptSubmit, { capture: true });
     }
   }
+
+  // Watch for file inputs — scan light DOM and shadow DOMs
+  scanForFileInputs(document.body);
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
+
+// ── Document-level file interception (Gemini drops files on a zone, not the editor) ─
+
+// Capture drop events on the entire document — Gemini's drop zone is not the editor
+document.addEventListener('drop', handleDropWithFiles as EventListener, { capture: true });
+
+// Capture change events on file inputs anywhere (including dynamically added ones)
+document.addEventListener('change', (e: Event) => {
+  const target = e.target;
+  if (target instanceof HTMLInputElement && target.type === 'file') {
+    handleFileInputChange(e);
+  }
+}, { capture: true });
+
+/**
+ * Recursively scan for file inputs in light and shadow DOMs.
+ * Gemini wraps some UI in shadow roots that querySelectorAll can't reach.
+ */
+function scanForFileInputs(root: Element | Document | ShadowRoot) {
+  // Check direct file inputs
+  root.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => {
+    if (watchedFileInputs.has(input)) return;
+    watchedFileInputs.add(input);
+    input.addEventListener('change', handleFileInputChange);
+  });
+
+  // Recurse into shadow DOMs
+  root.querySelectorAll('*').forEach((el) => {
+    if (el.shadowRoot) {
+      scanForFileInputs(el.shadowRoot);
+    }
+  });
+}

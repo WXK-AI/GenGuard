@@ -20,6 +20,8 @@ let lastSentText = '';
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
+let watchedFileInputs = new WeakSet<HTMLInputElement>();
+let pendingFiles: Array<{ name: string; type: string; data: number[] }> = [];
 
 // ── Settings (live-synced from chrome.storage) ───────────────────────────────
 
@@ -76,6 +78,61 @@ chrome.storage.onChanged.addListener((changes, area) => {
     sendIfChanged();
   }
 });
+
+// ── File Interception ────────────────────────────────────────────────────────
+
+const SCANNABLE_TYPES = /\.(pdf|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
+const SCANNABLE_MIME = /^(application\/pdf|text\/|image\/)/;
+
+function isScannableFile(file: File): boolean {
+  return SCANNABLE_MIME.test(file.type) || SCANNABLE_TYPES.test(file.name);
+}
+
+async function serializeFiles(files: File[]): Promise<Array<{ name: string; type: string; data: number[] }>> {
+  const results: Array<{ name: string; type: string; data: number[] }> = [];
+  for (const file of files) {
+    if (!isScannableFile(file)) continue;
+    const buf = await file.arrayBuffer();
+    results.push({ name: file.name, type: file.type, data: Array.from(new Uint8Array(buf)) });
+  }
+  return results;
+}
+
+function sendFilesForAssessment(serialized: Array<{ name: string; type: string; data: number[] }>) {
+  if (serialized.length === 0) return;
+  pendingFiles = serialized;
+  console.log(`[GenGuard] Intercepted ${serialized.length} file(s) for scanning`);
+  chrome.runtime.sendMessage({
+    type: 'ASSESS_FILES',
+    files: serialized,
+    source: 'chatgpt',
+  }).catch(() => {});
+}
+
+function handleFileInputChange(e: Event) {
+  if (!settings.enabled) return;
+  const input = e.target as HTMLInputElement;
+  if (!input.files || input.files.length === 0) return;
+  const files = Array.from(input.files).filter(isScannableFile);
+  if (files.length === 0) return;
+  serializeFiles(files).then(sendFilesForAssessment);
+}
+
+function handlePasteWithFiles(e: ClipboardEvent) {
+  if (!settings.enabled || !e.clipboardData) return;
+  const files: File[] = [];
+  for (const item of e.clipboardData.items) {
+    const file = item.getAsFile();
+    if (file && isScannableFile(file)) files.push(file);
+  }
+  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+}
+
+function handleDropWithFiles(e: DragEvent) {
+  if (!settings.enabled || !e.dataTransfer) return;
+  const files = Array.from(e.dataTransfer.files).filter(isScannableFile);
+  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+}
 
 // ── Communication ────────────────────────────────────────────────────────────
 
@@ -340,6 +397,10 @@ function attach(el: HTMLElement) {
   el.addEventListener('cut', scheduleAssessment);
   el.addEventListener('focus', scheduleAssessment);
 
+  // File interception (paste/drop on editor)
+  el.addEventListener('paste', handlePasteWithFiles as EventListener);
+  el.addEventListener('drop', handleDropWithFiles as EventListener);
+
   // Polling fallback
   startPolling();
 
@@ -377,6 +438,8 @@ function detach() {
     currentEditor.removeEventListener('paste', scheduleAssessment);
     currentEditor.removeEventListener('cut', scheduleAssessment);
     currentEditor.removeEventListener('focus', scheduleAssessment);
+    currentEditor.removeEventListener('paste', handlePasteWithFiles as EventListener);
+    currentEditor.removeEventListener('drop', handleDropWithFiles as EventListener);
     currentEditor.removeEventListener('keydown', interceptKeydown, true);
     currentEditor = null;
   }
@@ -412,6 +475,13 @@ const observer = new MutationObserver(() => {
       sendBtn.addEventListener('click', interceptSubmit, { capture: true });
     }
   }
+
+  // Watch for new file inputs (ChatGPT adds them dynamically)
+  document.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => {
+    if (watchedFileInputs.has(input)) return;
+    watchedFileInputs.add(input);
+    input.addEventListener('change', handleFileInputChange);
+  });
 });
 
 observer.observe(document.body, { childList: true, subtree: true });

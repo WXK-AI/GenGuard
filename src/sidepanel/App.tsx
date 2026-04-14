@@ -184,6 +184,7 @@ export default function App() {
   // Live assessment state from content script
   const [liveAssessment, setLiveAssessment] = useState<RiskAssessment | null>(null);
   const [liveSource, setLiveSource] = useState<string>('');
+  const [liveScanning, setLiveScanning] = useState(false);
 
   useEffect(() => {
     const port = chrome.runtime.connect({ name: 'sidepanel' });
@@ -218,46 +219,93 @@ export default function App() {
         const tabId = msg.tabId;
         const source = msg.source || '';
 
-        // Track for re-assessment when settings change
         lastLiveTextRef.current = text.trim();
         lastLiveTabIdRef.current = tabId;
 
-        // Empty text → clear live assessment immediately
         if (text.trim().length === 0) {
           assessGeneration++;
           setLiveAssessment(null);
           setLiveSource('');
+          setLiveScanning(false);
           return;
         }
 
-        // Non-empty text → run assessment async
         const gen = ++assessGeneration;
-        assess({ text }, settingsRef.current).then((result) => {
-          // Only apply if this is still the latest request
-          if (gen !== assessGeneration) return;
-          setLiveAssessment(result);
-          setLiveSource(source);
-          // Record to history (only if findings found)
-          if (result.findings.length > 0) {
-            addHistoryEntry({
-              source: source || 'live',
-              score: result.score,
-              level: result.level,
-              findingCount: result.findings.length,
-              findingTypes: [...new Set(result.findings.map((f) => f.type))],
-              breakdown: result.breakdown,
-              computeTimeMs: result.computeTimeMs,
+        setLiveScanning(true);
+        // Defer heavy work so React can paint the scanning indicator
+        setTimeout(() => {
+          assess({ text }, settingsRef.current).then((result) => {
+            if (gen !== assessGeneration) return;
+            setLiveAssessment(result);
+            setLiveSource(source);
+            setLiveScanning(false);
+            if (result.findings.length > 0) {
+              addHistoryEntry({
+                source: source || 'live',
+                score: result.score,
+                level: result.level,
+                findingCount: result.findings.length,
+                findingTypes: [...new Set(result.findings.map((f) => f.type))],
+                breakdown: result.breakdown,
+                computeTimeMs: result.computeTimeMs,
+              }).catch(() => {});
+            }
+            chrome.runtime.sendMessage({
+              type: 'RISK_UPDATE_FROM_PANEL',
+              assessment: { score: result.score, level: result.level, findings: result.findings },
+              tabId,
             }).catch(() => {});
-          }
-          // Send result back to content script via service worker
-          chrome.runtime.sendMessage({
-            type: 'RISK_UPDATE_FROM_PANEL',
-            assessment: { score: result.score, level: result.level, findings: result.findings },
-            tabId,
-          }).catch(() => {});
-        }).catch((err) => {
-          console.error('[GenGuard] Live assessment failed:', err);
+          }).catch((err) => {
+            console.error('[GenGuard] Live assessment failed:', err);
+            setLiveScanning(false);
+          });
+        }, 0);
+      } else if (msg.type === 'ASSESS_FILES') {
+        const serializedFiles: Array<{ name: string; type: string; data: number[] }> = msg.files ?? [];
+        const tabId = msg.tabId;
+        const source = msg.source || '';
+
+        if (serializedFiles.length === 0) return;
+
+        const files: File[] = serializedFiles.map((sf) => {
+          const bytes = new Uint8Array(sf.data);
+          return new File([bytes], sf.name, { type: sf.type });
         });
+
+        console.log(`[GenGuard] Received ${files.length} file(s) from ${source} for scanning`);
+        lastLiveTabIdRef.current = tabId;
+
+        const gen = ++assessGeneration;
+        setLiveScanning(true);
+        // Defer heavy work so React can paint the scanning indicator
+        setTimeout(() => {
+          const currentText = lastLiveTextRef.current || '';
+          assess({ text: currentText || undefined, files }, settingsRef.current).then((result) => {
+            if (gen !== assessGeneration) return;
+            setLiveAssessment(result);
+            setLiveSource(source);
+            setLiveScanning(false);
+            if (result.findings.length > 0) {
+              addHistoryEntry({
+                source: source || 'live',
+                score: result.score,
+                level: result.level,
+                findingCount: result.findings.length,
+                findingTypes: [...new Set(result.findings.map((f) => f.type))],
+                breakdown: result.breakdown,
+                computeTimeMs: result.computeTimeMs,
+              }).catch(() => {});
+            }
+            chrome.runtime.sendMessage({
+              type: 'RISK_UPDATE_FROM_PANEL',
+              assessment: { score: result.score, level: result.level, findings: result.findings },
+              tabId,
+            }).catch(() => {});
+          }).catch((err) => {
+            console.error('[GenGuard] File assessment failed:', err);
+            setLiveScanning(false);
+          });
+        }, 0);
       }
     });
 
@@ -360,7 +408,7 @@ export default function App() {
 
       <main className="p-4">
         {activeTab === 'dashboard' && (
-          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} />
+          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} liveScanning={liveScanning} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} />
         )}
         {activeTab === 'history' && <HistoryPage />}
         {activeTab === 'settings' && <SettingsPage />}
@@ -380,9 +428,9 @@ export default function App() {
 
 // ── Dashboard with NER Test ──────────────────────────────────────────────────
 
-function DashboardPage({ model, onDownload, liveAssessment, liveSource, settingsRef, lastLiveTabIdRef }: {
+function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScanning, settingsRef, lastLiveTabIdRef }: {
   model: ModelState; onDownload: () => void;
-  liveAssessment: RiskAssessment | null; liveSource: string;
+  liveAssessment: RiskAssessment | null; liveSource: string; liveScanning: boolean;
   settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
   lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
 }) {
@@ -449,13 +497,15 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, settings
 
   return (
     <div className="space-y-4">
-      {/* Live monitoring indicator */}
-      {liveAssessment && (
+      {/* Live monitoring / scanning indicator */}
+      {(liveAssessment || liveScanning) && (
         <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-700">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <span className={`w-2 h-2 rounded-full ${liveScanning ? 'bg-amber-500' : 'bg-blue-500'} animate-pulse`} />
             <span className="text-xs text-blue-700 dark:text-blue-300 font-medium">
-              Live monitoring: {liveSource === 'chatgpt' ? 'ChatGPT' : liveSource === 'gemini' ? 'Gemini' : liveSource}
+              {liveScanning
+                ? 'Scanning files & text...'
+                : `Live monitoring: ${liveSource === 'chatgpt' ? 'ChatGPT' : liveSource === 'gemini' ? 'Gemini' : liveSource}`}
             </span>
           </div>
         </div>
