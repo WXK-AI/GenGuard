@@ -48,8 +48,15 @@ export async function extractPdfText(buffer: ArrayBuffer): Promise<PdfExtraction
 
 /**
  * Extract text from a PDF File object.
+ * Returns empty text on failure so a bad PDF doesn't crash the full pipeline.
  */
 export async function extractPdfFromFile(file: File): Promise<PdfExtractionResult> {
-  const buffer = await file.arrayBuffer();
-  return extractPdfText(buffer);
+  try {
+    const buffer = await file.arrayBuffer();
+    return await extractPdfText(buffer);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[GenGuard] PDF extraction failed for "${file.name}":`, msg);
+    return { text: '', pageCount: 0, extractedPages: 0, timeMs: 0 };
+  }
 }

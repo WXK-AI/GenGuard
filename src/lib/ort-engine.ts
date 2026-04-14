@@ -89,9 +89,13 @@ async function warmUp(): Promise<void> {
   console.log(`[GenGuard] Warm-up inference: ${Math.round(performance.now() - t0)} ms`);
 }
 
+/** Default inference timeout (30 seconds). */
+const INFERENCE_TIMEOUT_MS = 30_000;
+
 /**
  * Run NER inference on tokenized input.
  * Returns raw logits [1, seqLen, numLabels].
+ * Throws if inference takes longer than INFERENCE_TIMEOUT_MS.
  */
 export async function runInference(
   inputIds: BigInt64Array,
@@ -105,8 +109,14 @@ export async function runInference(
     attention_mask: new ort.Tensor('int64', attentionMask, [1, seqLen]),
   };
 
-  const results = await session.run(feeds);
-  const logits = results.logits;
+  const result = await Promise.race([
+    session.run(feeds),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('ORT inference timed out')), INFERENCE_TIMEOUT_MS),
+    ),
+  ]);
+
+  const logits = result.logits;
   return logits.data as Float32Array;
 }
 
