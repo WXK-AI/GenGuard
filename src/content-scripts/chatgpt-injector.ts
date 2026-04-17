@@ -81,8 +81,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── File Interception ────────────────────────────────────────────────────────
 
-const SCANNABLE_TYPES = /\.(pdf|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
-const SCANNABLE_MIME = /^(application\/pdf|text\/|image\/)/;
+const SCANNABLE_TYPES = /\.(pdf|docx|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
+const SCANNABLE_MIME = /^(application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|text\/|image\/)/;
 
 function isScannableFile(file: File): boolean {
   return SCANNABLE_MIME.test(file.type) || SCANNABLE_TYPES.test(file.name);

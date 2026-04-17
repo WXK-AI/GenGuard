@@ -176,5 +176,6 @@ export function scoreFindings(
     suggestions,
     computeTimeMs,
     breakdown,
+    sourceGroups: [],
   };
 }

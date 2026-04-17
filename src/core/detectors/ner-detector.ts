@@ -383,3 +383,12 @@ export async function detectNER(
 
   return { findings, timeMs };
 }
+
+// Exported for unit testing only
+export const _testInternals = {
+  softmaxArgmax,
+  getTag,
+  aggregateToWords,
+  mergeEntities,
+  mergeAdjacentFindings,
+};

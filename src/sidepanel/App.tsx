@@ -193,6 +193,10 @@ export default function App() {
     // Track generation to discard stale results from slow NER
     let assessGeneration = 0;
 
+    // Persistent list of all uploaded files for the current session
+    let liveFiles: File[] = [];
+    let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
     port.onMessage.addListener((msg) => {
       if (msg.type === 'DOWNLOAD_STATUS') {
         setModel((prev) => ({
@@ -234,7 +238,7 @@ export default function App() {
         setLiveScanning(true);
         // Defer heavy work so React can paint the scanning indicator
         setTimeout(() => {
-          assess({ text }, settingsRef.current).then((result) => {
+          assess({ text, files: liveFiles.length > 0 ? liveFiles : undefined }, settingsRef.current).then((result) => {
             if (gen !== assessGeneration) return;
             setLiveAssessment(result);
             setLiveSource(source);
@@ -267,20 +271,28 @@ export default function App() {
 
         if (serializedFiles.length === 0) return;
 
-        const files: File[] = serializedFiles.map((sf) => {
+        // Add new files to persistent list, dedup by name
+        const existingNames = new Set(liveFiles.map((f) => f.name));
+        for (const sf of serializedFiles) {
+          if (existingNames.has(sf.name)) continue;
+          existingNames.add(sf.name);
           const bytes = new Uint8Array(sf.data);
-          return new File([bytes], sf.name, { type: sf.type });
-        });
+          liveFiles.push(new File([bytes], sf.name, { type: sf.type }));
+        }
 
-        console.log(`[GenGuard] Received ${files.length} file(s) from ${source} for scanning`);
         lastLiveTabIdRef.current = tabId;
-
-        const gen = ++assessGeneration;
+        console.log(`[GenGuard] Files updated: ${liveFiles.map(f => f.name).join(', ')}`);
         setLiveScanning(true);
-        // Defer heavy work so React can paint the scanning indicator
-        setTimeout(() => {
+
+        // Debounce: wait 500ms for duplicate messages from double-listener
+        if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
+        fileDebounceTimer = setTimeout(() => {
+          fileDebounceTimer = null;
+          const gen = ++assessGeneration;
           const currentText = lastLiveTextRef.current || '';
-          assess({ text: currentText || undefined, files }, settingsRef.current).then((result) => {
+
+          console.log(`[GenGuard] Scanning ${liveFiles.length} file(s) from ${source}`);
+          assess({ text: currentText || undefined, files: [...liveFiles] }, settingsRef.current).then((result) => {
             if (gen !== assessGeneration) return;
             setLiveAssessment(result);
             setLiveSource(source);
@@ -305,7 +317,7 @@ export default function App() {
             console.error('[GenGuard] File assessment failed:', err);
             setLiveScanning(false);
           });
-        }, 0);
+        }, 500);
       }
     });
 
@@ -422,6 +434,45 @@ export default function App() {
           />
         )}
       </main>
+    </div>
+  );
+}
+
+// ── Finding Row ────────────────────────────────────────────────────────────────
+
+function FindingRow({ f, liveAssessment, lastLiveTabIdRef, settingsRef, redactFindings }: {
+  f: Finding;
+  liveAssessment: RiskAssessment | null;
+  lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
+  settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
+  redactFindings: (findings: Finding[]) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-gray-700 pb-1">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-white text-[10px] font-medium ${
+          f.severity === 'critical' ? 'bg-red-600' :
+          f.severity === 'high' ? 'bg-orange-500' :
+          f.severity === 'medium' ? 'bg-yellow-500' :
+          'bg-gray-400'
+        }`}>
+          {f.type}
+        </span>
+        <span className="font-mono truncate">{f.value}</span>
+        <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{f.source}</span>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+        <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>
+        {liveAssessment && lastLiveTabIdRef.current && (
+          <button
+            onClick={() => redactFindings([f])}
+            className="px-1.5 py-0.5 text-[10px] text-red-500 hover:text-red-700 border border-gray-200 dark:border-gray-600 rounded hover:border-red-300"
+            title={`Replace with ${getMaskText(f, (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted')}`}
+          >
+            Redact
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -566,11 +617,11 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".txt,.csv,.json,.md,.log,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+            accept=".txt,.csv,.json,.md,.log,.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp"
             onChange={handleFileChange}
             className="hidden"
           />
-          <span className="text-[10px] text-gray-400">PDF, TXT, images</span>
+          <span className="text-[10px] text-gray-400">PDF, DOCX, TXT, images</span>
         </div>
 
         {files.length > 0 && (
@@ -634,36 +685,39 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
               <div className="text-[10px] text-gray-400 mb-2">
                 NER: {displayAssessment.breakdown.nerCount} &middot; Regex: {displayAssessment.breakdown.regexCount} &middot; OCR: {displayAssessment.breakdown.ocrCount}
               </div>
-              <div className="space-y-2">
-                {displayAssessment.findings.map((f, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-gray-700 pb-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-white text-[10px] font-medium ${
-                        f.severity === 'critical' ? 'bg-red-600' :
-                        f.severity === 'high' ? 'bg-orange-500' :
-                        f.severity === 'medium' ? 'bg-yellow-500' :
-                        'bg-gray-400'
+
+              {/* Grouped by source when multiple sources exist */}
+              {displayAssessment.sourceGroups.length > 1 ? (
+                <div className="space-y-3">
+                  {displayAssessment.sourceGroups.map((group, gi) => (
+                    <div key={gi} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                      <div className={`flex justify-between items-center px-3 py-1.5 text-xs font-medium ${
+                        group.level === 'Critical' ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300' :
+                        group.level === 'High' ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300' :
+                        group.level === 'Caution' ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300' :
+                        'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
                       }`}>
-                        {f.type}
-                      </span>
-                      <span className="font-mono truncate">{f.value}</span>
-                      <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{f.source}</span>
+                        <span>{group.label}</span>
+                        <span>{group.findings.length} finding{group.findings.length !== 1 ? 's' : ''} &middot; {group.level}</span>
+                      </div>
+                      <div className="space-y-1 p-2">
+                        {group.findings.map((f, i) => (
+                          <FindingRow key={i} f={f} liveAssessment={liveAssessment} lastLiveTabIdRef={lastLiveTabIdRef} settingsRef={settingsRef} redactFindings={redactFindings} />
+                        ))}
+                        {group.findings.length === 0 && (
+                          <p className="text-[10px] text-green-500 px-1">No PII detected</p>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                      <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>
-                      {liveAssessment && lastLiveTabIdRef.current && (
-                        <button
-                          onClick={() => redactFindings([f])}
-                          className="px-1.5 py-0.5 text-[10px] text-red-500 hover:text-red-700 border border-gray-200 dark:border-gray-600 rounded hover:border-red-300"
-                          title={`Replace with ${getMaskText(f, (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted')}`}
-                        >
-                          Redact
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {displayAssessment.findings.map((f, i) => (
+                    <FindingRow key={i} f={f} liveAssessment={liveAssessment} lastLiveTabIdRef={lastLiveTabIdRef} settingsRef={settingsRef} redactFindings={redactFindings} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

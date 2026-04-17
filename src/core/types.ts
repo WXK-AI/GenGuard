@@ -8,6 +8,15 @@ export interface Finding {
   confidence: number;
   severity: Severity | 'low';
   source: 'ner' | 'regex' | 'ocr';
+  /** Which input this finding came from (e.g. "Textbox", "report.pdf"). */
+  inputSource?: string;
+}
+
+export interface SourceGroup {
+  label: string;
+  findings: Finding[];
+  score: number;
+  level: 'Safe' | 'Caution' | 'High' | 'Critical';
 }
 
 export interface RiskAssessment {
@@ -22,6 +31,8 @@ export interface RiskAssessment {
     nerCount: number;
     ocrCount: number;
   };
+  /** Findings grouped by input source (textbox, each file). */
+  sourceGroups: SourceGroup[];
 }
 
 export type ModelStatus = 'not_loaded' | 'downloading' | 'loading' | 'ready' | 'error';
