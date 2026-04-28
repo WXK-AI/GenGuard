@@ -67,9 +67,11 @@ export interface GenGuardSettings {
   };
 }
 
+export const DEFAULT_NER_CONFIDENCE_THRESHOLD = 0.35;
+
 export const DEFAULT_SETTINGS: GenGuardSettings = {
   enabled: true,
-  nerConfidenceThreshold: 0.10,
+  nerConfidenceThreshold: DEFAULT_NER_CONFIDENCE_THRESHOLD,
   enableRegex: true,
   enableNer: true,
   enableOcr: true,

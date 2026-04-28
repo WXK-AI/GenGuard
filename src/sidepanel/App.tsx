@@ -7,7 +7,7 @@ import { initTokenizer, isTokenizerReady } from '../core/detectors/ner-detector'
 import { initOcrSessions, isOcrReady, disposeOcr } from '../core/extractors/ocr/ocr-engine';
 import { assess } from '../core/engine';
 import { addHistoryEntry, getHistory, clearHistory, type HistoryEntry } from '../lib/history-store';
-import type { Finding, RiskAssessment, GenGuardSettings } from '../core/types';
+import { DEFAULT_NER_CONFIDENCE_THRESHOLD, type Finding, type RiskAssessment, type GenGuardSettings } from '../core/types';
 
 function getMaskText(finding: Finding, mask: 'brackets' | 'asterisks' | 'redacted'): string {
   switch (mask) {
@@ -58,19 +58,24 @@ export default function App() {
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const settingsRef = useRef<Partial<GenGuardSettings>>({});
   const lastLiveTextRef = useRef<string>('');
-  const lastLiveTabIdRef = useRef<number | undefined>();
+  const lastLiveTabIdRef = useRef<number | undefined>(undefined);
+  const [liveTabId, setLiveTabId] = useState<number | undefined>(undefined);
+  const [redactionMask, setRedactionMask] = useState<'brackets' | 'asterisks' | 'redacted'>('brackets');
 
   // Load settings, keep ref in sync, and re-assess when settings change
   useEffect(() => {
     chrome.storage.local.get('genguard_settings').then((result) => {
-      if (result.genguard_settings) {
-        settingsRef.current = result.genguard_settings;
+      const stored = (result as { genguard_settings?: Partial<GenGuardSettings> }).genguard_settings;
+      if (stored) {
+        settingsRef.current = stored;
+        setRedactionMask(stored.inlineHighlight?.redactionMask ?? 'brackets');
       }
     });
 
     const handleChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
       if (area !== 'local' || !changes.genguard_settings) return;
       settingsRef.current = changes.genguard_settings.newValue ?? {};
+      setRedactionMask(settingsRef.current.inlineHighlight?.redactionMask ?? 'brackets');
 
       // Re-assess current live text with new settings
       const text = lastLiveTextRef.current;
@@ -194,7 +199,7 @@ export default function App() {
     let assessGeneration = 0;
 
     // Persistent list of all uploaded files for the current session
-    let liveFiles: File[] = [];
+    const liveFiles: File[] = [];
     let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     port.onMessage.addListener((msg) => {
@@ -225,6 +230,7 @@ export default function App() {
 
         lastLiveTextRef.current = text.trim();
         lastLiveTabIdRef.current = tabId;
+        setLiveTabId(tabId);
 
         if (text.trim().length === 0) {
           assessGeneration++;
@@ -258,6 +264,8 @@ export default function App() {
               type: 'RISK_UPDATE_FROM_PANEL',
               assessment: { score: result.score, level: result.level, findings: result.findings },
               tabId,
+              requestId: msg.requestId,
+              requestKind: msg.requestKind,
             }).catch(() => {});
           }).catch((err) => {
             console.error('[GenGuard] Live assessment failed:', err);
@@ -281,6 +289,7 @@ export default function App() {
         }
 
         lastLiveTabIdRef.current = tabId;
+        setLiveTabId(tabId);
         console.log(`[GenGuard] Files updated: ${liveFiles.map(f => f.name).join(', ')}`);
         setLiveScanning(true);
 
@@ -312,6 +321,8 @@ export default function App() {
               type: 'RISK_UPDATE_FROM_PANEL',
               assessment: { score: result.score, level: result.level, findings: result.findings },
               tabId,
+              requestId: msg.requestId,
+              requestKind: msg.requestKind,
             }).catch(() => {});
           }).catch((err) => {
             console.error('[GenGuard] File assessment failed:', err);
@@ -420,7 +431,7 @@ export default function App() {
 
       <main className="p-4">
         {activeTab === 'dashboard' && (
-          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} liveScanning={liveScanning} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} />
+          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} liveScanning={liveScanning} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} liveTabId={liveTabId} redactionMask={redactionMask} />
         )}
         {activeTab === 'history' && <HistoryPage />}
         {activeTab === 'settings' && <SettingsPage />}
@@ -440,13 +451,13 @@ export default function App() {
 
 // ── Finding Row ────────────────────────────────────────────────────────────────
 
-function FindingRow({ f, liveAssessment, lastLiveTabIdRef, settingsRef, redactFindings }: {
+function FindingRow({ f, allowRedaction, redactionMask, redactFindings }: {
   f: Finding;
-  liveAssessment: RiskAssessment | null;
-  lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
-  settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
+  allowRedaction: boolean;
+  redactionMask: 'brackets' | 'asterisks' | 'redacted';
   redactFindings: (findings: Finding[]) => void;
 }) {
+  const canRedact = allowRedaction && f.inputSource === 'Textbox';
   return (
     <div className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-gray-700 pb-1">
       <div className="flex items-center gap-1.5 min-w-0">
@@ -463,11 +474,11 @@ function FindingRow({ f, liveAssessment, lastLiveTabIdRef, settingsRef, redactFi
       </div>
       <div className="flex items-center gap-1.5 shrink-0 ml-2">
         <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>
-        {liveAssessment && lastLiveTabIdRef.current && (
+        {canRedact && (
           <button
             onClick={() => redactFindings([f])}
             className="px-1.5 py-0.5 text-[10px] text-red-500 hover:text-red-700 border border-gray-200 dark:border-gray-600 rounded hover:border-red-300"
-            title={`Replace with ${getMaskText(f, (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted')}`}
+            title={`Replace with ${getMaskText(f, redactionMask)}`}
           >
             Redact
           </button>
@@ -479,11 +490,13 @@ function FindingRow({ f, liveAssessment, lastLiveTabIdRef, settingsRef, redactFi
 
 // ── Dashboard with NER Test ──────────────────────────────────────────────────
 
-function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScanning, settingsRef, lastLiveTabIdRef }: {
+function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScanning, settingsRef, lastLiveTabIdRef, liveTabId, redactionMask }: {
   model: ModelState; onDownload: () => void;
   liveAssessment: RiskAssessment | null; liveSource: string; liveScanning: boolean;
   settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
   lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
+  liveTabId: number | undefined;
+  redactionMask: 'brackets' | 'asterisks' | 'redacted';
 }) {
   const [testText, setTestText] = useState('');
   const [assessment, setAssessment] = useState<RiskAssessment | null>(null);
@@ -527,11 +540,10 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
   };
 
   const redactFindings = (findings: Finding[]) => {
-    const mask = (settingsRef.current?.inlineHighlight?.redactionMask ?? 'brackets') as 'brackets' | 'asterisks' | 'redacted';
     const replacements = findings.map((f) => ({
       startIndex: f.startIndex,
       endIndex: f.endIndex,
-      replacement: getMaskText(f, mask),
+      replacement: getMaskText(f, redactionMask),
     }));
     const tabId = lastLiveTabIdRef.current;
     if (tabId) {
@@ -545,6 +557,9 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
 
   // Show live assessment or manual assessment
   const displayAssessment = assessment || liveAssessment;
+  const isShowingLiveAssessment = !assessment && liveAssessment !== null;
+  const allowRedaction = Boolean(isShowingLiveAssessment && liveTabId);
+  const redactableFindings = displayAssessment?.findings.filter((f) => f.inputSource === 'Textbox') ?? [];
 
   return (
     <div className="space-y-4">
@@ -672,9 +687,9 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
                 </h3>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-500">{displayAssessment.computeTimeMs} ms</span>
-                  {liveAssessment && lastLiveTabIdRef.current && (
+                  {allowRedaction && redactableFindings.length > 0 && (
                     <button
-                      onClick={() => redactFindings(displayAssessment.findings)}
+                      onClick={() => redactFindings(redactableFindings)}
                       className="px-2 py-0.5 text-[10px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-700 rounded hover:bg-red-100 dark:hover:bg-red-900/40"
                     >
                       Redact All
@@ -702,7 +717,7 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
                       </div>
                       <div className="space-y-1 p-2">
                         {group.findings.map((f, i) => (
-                          <FindingRow key={i} f={f} liveAssessment={liveAssessment} lastLiveTabIdRef={lastLiveTabIdRef} settingsRef={settingsRef} redactFindings={redactFindings} />
+                          <FindingRow key={i} f={f} allowRedaction={allowRedaction} redactionMask={redactionMask} redactFindings={redactFindings} />
                         ))}
                         {group.findings.length === 0 && (
                           <p className="text-[10px] text-green-500 px-1">No PII detected</p>
@@ -714,7 +729,7 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
               ) : (
                 <div className="space-y-2">
                   {displayAssessment.findings.map((f, i) => (
-                    <FindingRow key={i} f={f} liveAssessment={liveAssessment} lastLiveTabIdRef={lastLiveTabIdRef} settingsRef={settingsRef} redactFindings={redactFindings} />
+                    <FindingRow key={i} f={f} allowRedaction={allowRedaction} redactionMask={redactionMask} redactFindings={redactFindings} />
                   ))}
                 </div>
               )}
@@ -896,10 +911,10 @@ function SettingsPage() {
 
   useEffect(() => {
     chrome.storage.local.get('genguard_settings').then((result) => {
-      const stored = result.genguard_settings;
+      const stored = (result as { genguard_settings?: Partial<GenGuardSettings> }).genguard_settings;
       setSettings({
         enabled: stored?.enabled ?? true,
-        nerConfidenceThreshold: stored?.nerConfidenceThreshold ?? 0.10,
+        nerConfidenceThreshold: stored?.nerConfidenceThreshold ?? DEFAULT_NER_CONFIDENCE_THRESHOLD,
         enableRegex: stored?.enableRegex ?? true,
         enableNer: stored?.enableNer ?? true,
         enableOcr: stored?.enableOcr ?? true,

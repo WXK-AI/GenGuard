@@ -21,6 +21,14 @@ const POSTCODE_CONTEXT = /\b(?:poskod|postcode|zip|kod\s?pos|alamat|address)\b/i
 
 /** Context keywords for bank account numbers. */
 const BANK_CONTEXT = /\b(?:akaun|account|bank|acc|transfer|bayaran|payment|remit|wire|deposit|kredit|debit|simpanan|savings|semasa|current)\b/i;
+/** Context keywords for passport-like IDs, which are otherwise easy to confuse with product/order IDs. */
+const PASSPORT_CONTEXT = /\b(?:passport|pasport|travel\s+document|immigration|visa)\b/i;
+
+const CONTEXT_BY_PATTERN: Record<string, RegExp> = {
+  BANK_ACCT: BANK_CONTEXT,
+  PASSPORT: PASSPORT_CONTEXT,
+  MY_POSTCODE: POSTCODE_CONTEXT,
+};
 
 /** Luhn checksum validation for credit card numbers. */
 function luhnCheck(digits: string): boolean {
@@ -84,7 +92,7 @@ export function detectRegex(text: string): { findings: Finding[]; timeMs: number
         const windowStart = Math.max(0, startIndex - 80);
         const windowEnd = Math.min(text.length, endIndex + 80);
         const context = text.slice(windowStart, windowEnd);
-        const contextRegex = pattern.name === 'BANK_ACCT' ? BANK_CONTEXT : POSTCODE_CONTEXT;
+        const contextRegex = CONTEXT_BY_PATTERN[pattern.name] ?? POSTCODE_CONTEXT;
         if (!contextRegex.test(context)) continue;
       }
 

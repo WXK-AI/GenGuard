@@ -35,6 +35,10 @@ export interface RecBatch {
   width: number;
 }
 
+function toImageData(img: ImgData): ImageData {
+  return new ImageData(new Uint8ClampedArray(img.data), img.w, img.h);
+}
+
 /** Decode an image File into raw RGBA pixel data via OffscreenCanvas. */
 export async function imageFileToImgData(file: File): Promise<ImgData> {
   const bitmap = await createImageBitmap(file);
@@ -75,7 +79,7 @@ function resizeForDetection(img: ImgData): { resized: ImgData; scaleX: number; s
   // Resize via OffscreenCanvas (browser-native, fast bilinear)
   const src = new OffscreenCanvas(img.w, img.h);
   const sctx = src.getContext('2d')!;
-  sctx.putImageData(new ImageData(img.data, img.w, img.h), 0, 0);
+  sctx.putImageData(toImageData(img), 0, 0);
 
   const dst = new OffscreenCanvas(newW, newH);
   const dctx = dst.getContext('2d')!;
@@ -153,7 +157,7 @@ function cropAndResizeBox(img: ImgData, box: Box): { data: Float32Array; w: numb
 
   // Source canvas with the crop
   const src = new OffscreenCanvas(img.w, img.h);
-  src.getContext('2d')!.putImageData(new ImageData(img.data, img.w, img.h), 0, 0);
+  src.getContext('2d')!.putImageData(toImageData(img), 0, 0);
 
   // Destination canvas at recognition size
   const dst = new OffscreenCanvas(targetW, inputHeight);

@@ -205,18 +205,22 @@ async function doOcrDownload() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'ASSESS_TEXT') {
     // Forward text from content script to side panel for assessment
-    broadcast({ type: 'ASSESS_TEXT', text: msg.text, source: msg.source, tabId: sender.tab?.id });
-    sendResponse({ ok: true });
+    const hasAssessor = ports.size > 0;
+    broadcast({ type: 'ASSESS_TEXT', text: msg.text, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
+    sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'ASSESS_FILES') {
     // Forward serialized files from content script to side panel for assessment
-    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId: sender.tab?.id });
-    sendResponse({ ok: true });
+    const hasAssessor = ports.size > 0;
+    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
+    sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'RISK_UPDATE_FROM_PANEL') {
     // Side panel sends back assessment — relay to the originating content script tab
     if (msg.tabId) {
       chrome.tabs.sendMessage(msg.tabId, {
         type: 'RISK_UPDATE',
         assessment: msg.assessment,
+        requestId: msg.requestId,
+        requestKind: msg.requestKind,
       }).catch(() => {});
     }
     sendResponse({ ok: true });

@@ -103,11 +103,8 @@ function ensureRegistered(intensity: HighlightIntensity = 'normal') {
     criticalHighlight = new Highlight();
     highHighlight = new Highlight();
     mediumHighlight = new Highlight();
-    // @ts-expect-error CSS.highlights exists in Chrome 105+
     CSS.highlights.set('genguard-critical', criticalHighlight);
-    // @ts-expect-error
     CSS.highlights.set('genguard-high', highHighlight);
-    // @ts-expect-error
     CSS.highlights.set('genguard-medium', mediumHighlight);
   }
 

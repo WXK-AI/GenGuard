@@ -12,7 +12,8 @@
       "label": "Malaysian Passport",
       "regex": "\\b[A-Z]\\d{8}\\b",
       "severity": "critical",
-      "flags": "g"
+      "flags": "g",
+      "contextRequired": true
     },
     {
       "name": "PHONE",

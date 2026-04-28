@@ -11,28 +11,35 @@
 
 import { updateHighlights, clearHighlights, isHighlightSupported, setIntensity } from './inline-highlighter';
 import type { HighlightFinding, HighlightIntensity } from './inline-highlighter';
+import type { GenGuardSettings } from '../core/types';
 
 console.log('[GenGuard] Gemini injector loaded');
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let lastSentText = '';
+let lastAssessedText = '';
+let nextRequestId = 0;
+let latestTextRequestId = 0;
+let latestFileRequestId = 0;
+let textAssessmentPending = false;
+let fileAssessmentPending = false;
+let assessmentUnavailable = false;
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
-let watchedFileInputs = new WeakSet<HTMLInputElement>();
-let pendingFiles: Array<{ name: string; type: string; data: number[] }> = [];
+const watchedFileInputs = new WeakSet<HTMLInputElement>();
 
 // ── Settings (live-synced from chrome.storage) ───────────────��───────────────
 
-let settings = {
+const settings = {
   enabled: true,
   inlineHighlightEnabled: true,
   highlightIntensity: 'normal' as HighlightIntensity,
 };
 
 chrome.storage.local.get('genguard_settings').then((result) => {
-  const s = result.genguard_settings;
+  const s = (result as { genguard_settings?: Partial<GenGuardSettings> }).genguard_settings;
   if (s) {
     settings.enabled = s.enabled ?? true;
     settings.inlineHighlightEnabled = s.inlineHighlight?.enabled ?? true;
@@ -47,7 +54,7 @@ chrome.storage.local.get('genguard_settings').then((result) => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.genguard_settings) return;
-  const s = changes.genguard_settings.newValue;
+  const s = changes.genguard_settings.newValue as Partial<GenGuardSettings> | undefined;
   if (!s) return;
 
   const wasEnabled = settings.enabled;
@@ -78,6 +85,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 const SCANNABLE_TYPES = /\.(pdf|docx|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
 const SCANNABLE_MIME = /^(application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|text\/|image\/)/;
+const MAX_SCANNABLE_FILE_BYTES = 8 * 1024 * 1024;
 
 function isScannableFile(file: File): boolean {
   return SCANNABLE_MIME.test(file.type) || SCANNABLE_TYPES.test(file.name);
@@ -87,6 +95,10 @@ async function serializeFiles(files: File[]): Promise<Array<{ name: string; type
   const results: Array<{ name: string; type: string; data: number[] }> = [];
   for (const file of files) {
     if (!isScannableFile(file)) continue;
+    if (file.size > MAX_SCANNABLE_FILE_BYTES) {
+      console.warn(`[GenGuard] Skipping large file "${file.name}" (${file.size} bytes)`);
+      continue;
+    }
     const buf = await file.arrayBuffer();
     results.push({ name: file.name, type: file.type, data: Array.from(new Uint8Array(buf)) });
   }
@@ -95,13 +107,30 @@ async function serializeFiles(files: File[]): Promise<Array<{ name: string; type
 
 function sendFilesForAssessment(serialized: Array<{ name: string; type: string; data: number[] }>) {
   if (serialized.length === 0) return;
-  pendingFiles = serialized;
+  const requestId = ++nextRequestId;
+  latestFileRequestId = requestId;
+  fileAssessmentPending = true;
+  assessmentUnavailable = false;
   console.log(`[GenGuard] Intercepted ${serialized.length} file(s) for scanning`);
   chrome.runtime.sendMessage({
     type: 'ASSESS_FILES',
     files: serialized,
     source: 'gemini',
-  }).catch(() => {});
+    requestId,
+    requestKind: 'files',
+  }).then((response) => {
+    if (requestId === latestFileRequestId && response?.hasAssessor === false) {
+      fileAssessmentPending = false;
+      assessmentUnavailable = true;
+      updateBadge();
+    }
+  }).catch(() => {
+    if (requestId === latestFileRequestId) {
+      fileAssessmentPending = false;
+      assessmentUnavailable = true;
+      updateBadge();
+    }
+  });
 }
 
 function handleFileInputChange(e: Event) {
@@ -137,7 +166,18 @@ function sendToBackground(msg: Record<string, unknown>) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'RISK_UPDATE') {
+    if (typeof msg.requestId === 'number') {
+      if (msg.requestKind === 'files' && msg.requestId !== latestFileRequestId) return;
+      if (msg.requestKind !== 'files' && msg.requestId !== latestTextRequestId) return;
+    }
     lastAssessment = msg.assessment;
+    lastAssessedText = currentEditor ? getTextContent(currentEditor).trim() : lastSentText;
+    if (msg.requestKind === 'files') {
+      fileAssessmentPending = false;
+    } else {
+      textAssessmentPending = false;
+    }
+    assessmentUnavailable = false;
     updateBadge();
     applyInlineHighlights(msg.assessment?.findings ?? []);
   } else if (msg.type === 'GET_PROMPT_TEXT') {
@@ -205,14 +245,34 @@ function sendIfChanged() {
 
   if (text === lastSentText) return;
   lastSentText = text;
+  const requestId = ++nextRequestId;
+  latestTextRequestId = requestId;
+  textAssessmentPending = true;
+  assessmentUnavailable = false;
 
   if (text.length > 0) {
-    sendToBackground({ type: 'ASSESS_TEXT', text, source: 'gemini' });
+    chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text, source: 'gemini', requestId, requestKind: 'text' })
+      .then((response) => {
+        if (requestId === latestTextRequestId && response?.hasAssessor === false) {
+          textAssessmentPending = false;
+          assessmentUnavailable = true;
+          updateBadge();
+        }
+      })
+      .catch(() => {
+        if (requestId === latestTextRequestId) {
+          textAssessmentPending = false;
+          assessmentUnavailable = true;
+          updateBadge();
+        }
+      });
   } else {
     lastAssessment = null;
+    lastAssessedText = '';
+    textAssessmentPending = false;
     updateBadge();
     clearHighlights();
-    sendToBackground({ type: 'ASSESS_TEXT', text: '', source: 'gemini' });
+    chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text: '', source: 'gemini', requestId, requestKind: 'text' }).catch(() => {});
   }
 }
 
@@ -240,7 +300,7 @@ function findSendButton(): HTMLButtonElement | null {
 
 function interceptSubmit(e: Event) {
   if (!settings.enabled) return;
-  if (!lastAssessment || lastAssessment.score < 20) return;
+  if (!shouldBlockSubmit()) return;
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
@@ -250,17 +310,26 @@ function interceptSubmit(e: Event) {
 function interceptKeydown(e: KeyboardEvent) {
   if (!settings.enabled) return;
   if (e.key !== 'Enter' || e.shiftKey) return;
-  if (!lastAssessment || lastAssessment.score < 20) return;
+  if (!shouldBlockSubmit()) return;
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
   showWarningModal();
 }
 
+function shouldBlockSubmit(): boolean {
+  const text = currentEditor ? getTextContent(currentEditor).trim() : '';
+  if (text !== lastAssessedText) {
+    sendIfChanged();
+    return true;
+  }
+  if (textAssessmentPending || fileAssessmentPending || assessmentUnavailable) return true;
+  return Boolean(lastAssessment && lastAssessment.score >= 20);
+}
+
 // ─��� Warning Modal ───────────────────────��──────────────────────────────��─────
 
 function showWarningModal() {
-  if (!lastAssessment) return;
   if (document.getElementById('genguard-modal')) return;
 
   const modal = document.createElement('div');
@@ -274,17 +343,23 @@ function showWarningModal() {
   const levelColor: Record<string, string> = {
     Safe: '#22c55e', Caution: '#eab308', High: '#f97316', Critical: '#ef4444',
   };
-  const color = levelColor[lastAssessment.level] || '#eab308';
+  const color = lastAssessment ? levelColor[lastAssessment.level] || '#eab308' : '#2563eb';
+  const title = lastAssessment && lastAssessment.score >= 20 ? 'PII Detected' : 'GenGuard Scan Required';
+  const detail = lastAssessment && lastAssessment.score >= 20
+    ? `Risk Score: <strong style="color: ${color}">${lastAssessment.score}</strong>
+        (<strong style="color: ${color}">${lastAssessment.level}</strong>)
+        &mdash; ${lastAssessment.findings.length} finding(s)`
+    : assessmentUnavailable
+      ? 'GenGuard needs the side panel open before it can assess this prompt.'
+      : 'GenGuard is still assessing the latest prompt or file. Review before sending.';
 
   modal.innerHTML = `
     <div style="background: #fff; border-radius: 12px; padding: 24px; max-width: 400px; width: 90%;
                 box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center;">
       <div style="font-size: 40px; margin-bottom: 8px;">&#9888;</div>
-      <h2 style="margin: 0 0 8px; font-size: 18px; color: #111;">PII Detected</h2>
+      <h2 style="margin: 0 0 8px; font-size: 18px; color: #111;">${title}</h2>
       <p style="margin: 0 0 16px; font-size: 14px; color: #555;">
-        Risk Score: <strong style="color: ${color}">${lastAssessment.score}</strong>
-        (<strong style="color: ${color}">${lastAssessment.level}</strong>)
-        &mdash; ${lastAssessment.findings.length} finding(s)
+        ${detail}
       </p>
       <div style="display: flex; gap: 8px; justify-content: center;">
         <button id="genguard-proceed" style="
@@ -431,6 +506,10 @@ function detach() {
   }
   lastAssessment = null;
   lastSentText = '';
+  lastAssessedText = '';
+  textAssessmentPending = false;
+  fileAssessmentPending = false;
+  assessmentUnavailable = false;
 }
 
 // ── MutationObserver ───────��──────────────────────────���──────────────────────

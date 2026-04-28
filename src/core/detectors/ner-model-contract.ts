@@ -49,7 +49,7 @@ export const NER_MODEL_CONTRACT = {
     EMAIL:      'high',
     ADDRESS:    'high',
     PERSON:     'medium',
-    ORG:        'medium',
+    ORG:        'low',
   } as const,
 } as const;
 

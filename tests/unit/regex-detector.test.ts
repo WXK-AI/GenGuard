@@ -46,6 +46,18 @@ describe('regex-detector', () => {
     });
   });
 
+  describe('PASSPORT', () => {
+    it('detects passport-like IDs with passport context', () => {
+      const { findings } = detectRegex('Passport number A12345678');
+      expect(findings.find((f) => f.type === 'PASSPORT')).toBeDefined();
+    });
+
+    it('skips bare passport-like IDs without context', () => {
+      const { findings } = detectRegex('Order A12345678 is ready');
+      expect(findings.find((f) => f.type === 'PASSPORT')).toBeUndefined();
+    });
+  });
+
   // ── Email ─────────────────────────────────────────────────────────────
   describe('EMAIL', () => {
     it('detects standard email', () => {

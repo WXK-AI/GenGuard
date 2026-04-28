@@ -22,7 +22,7 @@ const MAX_ENTRIES = 50;
 
 export async function getHistory(): Promise<HistoryEntry[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY);
-  return result[STORAGE_KEY] ?? [];
+  return (result as Record<string, HistoryEntry[]>)[STORAGE_KEY] ?? [];
 }
 
 export async function addHistoryEntry(entry: Omit<HistoryEntry, 'id' | 'timestamp'>): Promise<void> {

@@ -95,6 +95,12 @@ interface WordPred {
   end: number;
 }
 
+const ENTITY_CONFIDENCE_FLOORS: Partial<Record<NEREntityType, number>> = {
+  ORG: 0.65,
+  PERSON: 0.45,
+  ADDRESS: 0.45,
+};
+
 /**
  * Step 1: Aggregate subword predictions → one prediction per word.
  *
@@ -199,7 +205,12 @@ function mergeEntities(
     const { tag } = getTag(group[0].label);
     const avgScore = group.reduce((s, w) => s + w.confidence, 0) / group.length;
 
-    if (avgScore >= confidenceThreshold) {
+    const entityThreshold = Math.max(
+      confidenceThreshold,
+      ENTITY_CONFIDENCE_FLOORS[tag as NEREntityType] ?? confidenceThreshold,
+    );
+
+    if (avgScore >= entityThreshold) {
       const startOffset = group[0].start;
       const endOffset = group[group.length - 1].end;
       const value = originalText.slice(startOffset, endOffset);
@@ -226,7 +237,7 @@ function mergeEntities(
       continue;
     }
 
-    const { bi, tag } = getTag(wp.label);
+    const { tag } = getTag(wp.label);
 
     if (group.length === 0) {
       group.push(wp);

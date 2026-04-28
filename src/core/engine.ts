@@ -16,7 +16,7 @@ import { scoreFindings } from './detectors/context-scorer';
 import { extractPdfFromFile } from './extractors/pdf-extractor';
 import { extractDocxFromFile } from './extractors/docx-extractor';
 import { extractTextFromImage } from './extractors/image-ocr';
-import type { Finding, RiskAssessment, SourceGroup, GenGuardSettings } from './types';
+import { DEFAULT_NER_CONFIDENCE_THRESHOLD, type Finding, type RiskAssessment, type SourceGroup, type GenGuardSettings } from './types';
 
 export interface AssessInput {
   text?: string;
@@ -145,7 +145,7 @@ async function assessInner(
 
   const enableRegex = settings?.enableRegex ?? true;
   const enableNer = settings?.enableNer ?? true;
-  const nerThreshold = settings?.nerConfidenceThreshold ?? 0.10;
+  const nerThreshold = settings?.nerConfidenceThreshold ?? DEFAULT_NER_CONFIDENCE_THRESHOLD;
 
   // Build a list of { text, label } sources to scan independently
   const sources: Array<{ text: string; label: string }> = [];

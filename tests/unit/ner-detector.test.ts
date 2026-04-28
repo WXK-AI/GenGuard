@@ -53,11 +53,6 @@ describe('softmaxArgmax', () => {
   });
 
   it('respects offset parameter', () => {
-    // Two positions of 4 labels each; max at position 1 is at index 3
-    const logits = new Float32Array([
-      0.1, 0.2, 0.3, 0.0,   // position 0
-      0.0, 0.0, 0.0, 10.0,  // position 1 — max at idx 3
-    ]);
     // softmaxArgmax uses NUM_LABELS (17) as stride, so we simulate
     // by checking with explicit offset
     // Actually, softmaxArgmax uses the global NUM_LABELS constant (17).
@@ -236,6 +231,22 @@ describe('mergeEntities', () => {
     const encoded = mkEncoded(
       [[0, 0], [0, 5], [6, 11], [0, 0]],
       [null, 0, 1, null],
+    );
+
+    const findings = mergeEntities(predictions, encoded, text, 0.1);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('uses a higher confidence floor for noisy ORG entities', () => {
+    const text = 'Maybank';
+    const predictions = [
+      { wordId: null, label: 'O', confidence: 0 },
+      { wordId: 0, label: 'B-ORG', confidence: 0.5 },
+      { wordId: null, label: 'O', confidence: 0 },
+    ];
+    const encoded = mkEncoded(
+      [[0, 0], [0, 7], [0, 0]],
+      [null, 0, null],
     );
 
     const findings = mergeEntities(predictions, encoded, text, 0.1);
