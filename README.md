@@ -8,7 +8,7 @@ It functions strictly on-device using WebAssembly and ONNX Runtime Web, guarante
 
 ## 🔒 Key Features
 - **Zero-Knowledge Architecture:** No cloud dependencies, no API calls, no analytics, and absolutely zero telemetry of user content.
-- **Custom Native Model:** Powered by `piiranha-malaysia-v4-final`, a DeBERTa-v3 model heavily fine-tuned for Malaysian entities (MyKad, Phone numbers, Bank accounts, Local Addresses) alongside international PII formats. Includes 17 BIO tags.
+- **Custom Native Model:** Powered by `piiranha-malaysia-v4` quantized ONNX, a DeBERTa-v3 model heavily fine-tuned for Malaysian entities (MyKad, Phone numbers, Bank accounts, Local Addresses) alongside international PII formats. Includes 17 BIO tags.
 - **In-Place Highlight & Redaction:** Real-time highlights appear directly in the ChatGPT/Gemini prompt box, with single-click inline redactions.
 - **Multi-Modal Scanning:** Supports raw text scanning, PDF extraction (via bundled `pdfjs` worker), and offline Image OCR (PaddleOCR mobile models) directly in your browser.
 - **Deterministic Risk Scoring:** Calculates a quantitative risk score (0-100) based on severity weights, nudging the user to intercept leaks early instead of hard-blocking workflows.
@@ -27,9 +27,9 @@ It functions strictly on-device using WebAssembly and ONNX Runtime Web, guarante
 - Models must be pre-downloaded and placed inside the `public/models/` directory prior to building.
 
 **Models Required in `public/models/`:**
-- `piiranha-malaysia-v4.onnx`
-- `piiranha-malaysia-v4.tokenizer.json`
-- `piiranha-malaysia-v4.config.json`
+- `model_quantized.onnx`
+- `tokenizer.json`
+- `config.json`
 - `ppocr-det-mobile.onnx`, `ppocr-cls-mobile.onnx`, `ppocr-rec-mobile.onnx` (If supporting OCR)
 
 ### 2. Setup

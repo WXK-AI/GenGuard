@@ -1,9 +1,9 @@
 export const NER_MODEL_CONTRACT = {
   // Model hosted on HuggingFace — downloaded to IndexedDB on first use
-  hfRepoId: 'XkAI/piiranha-my-v3',
-  hfFilename: 'onnx/model_quantized.onnx',
+  hfRepoId: 'XkAI/piiranha-malaysia-v4-fp32',
+  hfFilename: 'model_quantized.onnx',
   tokenizerFilename: 'tokenizer.json',
-  configFilename: 'onnx/config.json',
+  configFilename: 'config.json',
 
   maxSeqLen: 256,
   architecture: 'deberta-v3',

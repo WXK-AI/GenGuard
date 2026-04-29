@@ -759,8 +759,8 @@ function ModelStatusPage({ model, ocr, onDownload, onDownloadOcr, onReload }: {
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
         <h2 className="text-sm font-semibold mb-3">NER Model</h2>
         <dl className="space-y-2 text-xs">
-          <Row label="Model" value="piiranha-my-v3 (DeBERTa-v3)" />
-          <Row label="Source" value="HuggingFace: XkAI/piiranha-my-v3" />
+          <Row label="Model" value="piiranha-malaysia-v4 quantized (DeBERTa-v3)" />
+          <Row label="Source" value="HuggingFace: XkAI/piiranha-malaysia-v4-fp32" />
           <Row label="File" value="model_quantized.onnx" />
           <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
           <Row label="Download" value={<DownloadLabel status={model.download} />} />
@@ -1014,7 +1014,7 @@ function SettingsPage() {
         <dl className="space-y-1 text-xs">
           <Row label="Version" value="0.1.0" />
           <Row label="Architecture" value="Zero-knowledge (client-side only)" />
-          <Row label="Model" value="piiranha-my-v3 (DeBERTa-v3)" />
+          <Row label="Model" value="piiranha-malaysia-v4 quantized (DeBERTa-v3)" />
           <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
         </dl>
       </div>
