@@ -1,0 +1,94 @@
+name: Build Extension Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build zip and optional CRX
+    runs-on: ubuntu-latest
+    env:
+      EXTENSION_ZIP: build/genguard-extension.zip
+      EXTENSION_CRX: build/genguard-extension.crx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Pack Chrome Web Store zip
+        run: |
+          mkdir -p build
+          cd dist
+          zip -r "$GITHUB_WORKSPACE/$EXTENSION_ZIP" .
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: genguard-extension-zip
+          path: ${{ env.EXTENSION_ZIP }}
+          if-no-files-found: error
+
+      - name: Check CRX signing key
+        id: crx_key
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
+        run: |
+          if [ -n "$CRX_PRIVATE_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign Chrome Extension CRX file
+        if: steps.crx_key.outputs.available == 'true'
+        uses: cardinalby/webext-buildtools-chrome-crx-action@2.0.3
+        with:
+          zipFilePath: ${{ env.EXTENSION_ZIP }}
+          crxFilePath: ${{ env.EXTENSION_CRX }}
+          privateKey: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
+
+      - name: Upload CRX artifact
+        if: steps.crx_key.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: genguard-extension-crx
+          path: ${{ env.EXTENSION_CRX }}
+          if-no-files-found: error
+
+      - name: Create or update GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "GenGuard extension build artifacts."
+
+          gh release upload "$GITHUB_REF_NAME" "$EXTENSION_ZIP" --clobber
+
+          if [ -f "$EXTENSION_CRX" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$EXTENSION_CRX" --clobber
+          fi

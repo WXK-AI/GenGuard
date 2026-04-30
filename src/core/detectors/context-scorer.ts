@@ -37,19 +37,25 @@ function spans_overlap(a: Finding, b: Finding): boolean {
  *   3. Longer span  (more specific detection)
  */
 function pickWinner(a: Finding, b: Finding): Finding {
+  const detectorSources = Array.from(new Set([
+    ...(a.detectorSources ?? [a.source]),
+    ...(b.detectorSources ?? [b.source]),
+  ])).sort();
+  const withSources = (winner: Finding): Finding => ({ ...winner, detectorSources });
+
   // NER beats regex
-  if (a.source === 'ner' && b.source === 'regex') return a;
-  if (b.source === 'ner' && a.source === 'regex') return b;
+  if (a.source === 'ner' && b.source === 'regex') return withSources(a);
+  if (b.source === 'ner' && a.source === 'regex') return withSources(b);
 
   // Same source → higher confidence
   if (a.confidence !== b.confidence) {
-    return a.confidence > b.confidence ? a : b;
+    return withSources(a.confidence > b.confidence ? a : b);
   }
 
   // Same confidence → longer span
   const aLen = a.endIndex - a.startIndex;
   const bLen = b.endIndex - b.startIndex;
-  return aLen >= bLen ? a : b;
+  return withSources(aLen >= bLen ? a : b);
 }
 
 /**
@@ -163,9 +169,9 @@ export function scoreFindings(
   const suggestions = buildSuggestions(findings);
 
   const breakdown = {
-    regexCount: findings.filter((f) => f.source === 'regex').length,
-    nerCount: findings.filter((f) => f.source === 'ner').length,
-    ocrCount: findings.filter((f) => f.source === 'ocr').length,
+    regexCount: findings.filter((f) => (f.detectorSources ?? [f.source]).includes('regex')).length,
+    nerCount: findings.filter((f) => (f.detectorSources ?? [f.source]).includes('ner')).length,
+    ocrCount: findings.filter((f) => (f.detectorSources ?? [f.source]).includes('ocr')).length,
   };
 
   return {

@@ -25,6 +25,7 @@ let latestFileRequestId = 0;
 let textAssessmentPending = false;
 let fileAssessmentPending = false;
 let assessmentUnavailable = false;
+let fileSessionActive = false;
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
@@ -115,11 +116,40 @@ function sendFilesForAssessment(serialized: Array<{ name: string; type: string; 
   const requestId = ++nextRequestId;
   latestFileRequestId = requestId;
   fileAssessmentPending = true;
+  fileSessionActive = true;
   assessmentUnavailable = false;
   console.log(`[GenGuard] Intercepted ${serialized.length} file(s) for scanning`);
   chrome.runtime.sendMessage({
     type: 'ASSESS_FILES',
     files: serialized,
+    source: 'chatgpt',
+    requestId,
+    requestKind: 'files',
+    mode: 'replace',
+  }).then((response) => {
+    if (requestId === latestFileRequestId && response?.hasAssessor === false) {
+      fileAssessmentPending = false;
+      assessmentUnavailable = true;
+      updateBadge();
+    }
+  }).catch(() => {
+    if (requestId === latestFileRequestId) {
+      fileAssessmentPending = false;
+      assessmentUnavailable = true;
+      updateBadge();
+    }
+  });
+}
+
+function clearFileAssessment() {
+  if (!fileSessionActive && !fileAssessmentPending) return;
+  const requestId = ++nextRequestId;
+  latestFileRequestId = requestId;
+  fileSessionActive = false;
+  fileAssessmentPending = true;
+  assessmentUnavailable = false;
+  chrome.runtime.sendMessage({
+    type: 'CLEAR_FILES',
     source: 'chatgpt',
     requestId,
     requestKind: 'files',
@@ -141,9 +171,15 @@ function sendFilesForAssessment(serialized: Array<{ name: string; type: string; 
 function handleFileInputChange(e: Event) {
   if (!settings.enabled) return;
   const input = e.target as HTMLInputElement;
-  if (!input.files || input.files.length === 0) return;
+  if (!input.files || input.files.length === 0) {
+    clearFileAssessment();
+    return;
+  }
   const files = Array.from(input.files).filter(isScannableFile);
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    clearFileAssessment();
+    return;
+  }
   serializeFiles(files).then(sendFilesForAssessment);
 }
 
@@ -161,6 +197,32 @@ function handleDropWithFiles(e: DragEvent) {
   if (!settings.enabled || !e.dataTransfer) return;
   const files = Array.from(e.dataTransfer.files).filter(isScannableFile);
   if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+}
+
+function isAttachmentRemoveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest<HTMLElement>('button, [role="button"], [aria-label], [title], [data-testid]');
+  if (!control) return false;
+  const context = target.closest<HTMLElement>(
+    '[data-testid*="attachment" i], [data-testid*="file" i], ' +
+    '[aria-label*="attachment" i], [aria-label*="file" i]'
+  );
+  const label = [
+    control.getAttribute('aria-label'),
+    control.getAttribute('title'),
+    control.getAttribute('data-testid'),
+    control.textContent,
+    context?.getAttribute('aria-label'),
+    context?.getAttribute('data-testid'),
+    context?.textContent,
+  ].filter(Boolean).join(' ').toLowerCase();
+  const looksLikeFile = Boolean(context) || SCANNABLE_TYPES.test(label);
+  return looksLikeFile && /(remove|delete|close|dismiss|cancel)/.test(label);
+}
+
+function handleAttachmentRemoveClick(e: MouseEvent) {
+  if (!settings.enabled || !fileSessionActive || !isAttachmentRemoveTarget(e.target)) return;
+  clearFileAssessment();
 }
 
 // ── Communication ────────────────────────────────────────────────────────────
@@ -528,6 +590,7 @@ function detach() {
   lastAssessedText = '';
   textAssessmentPending = false;
   fileAssessmentPending = false;
+  fileSessionActive = false;
   assessmentUnavailable = false;
 }
 
@@ -564,3 +627,4 @@ const observer = new MutationObserver(() => {
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
+document.addEventListener('click', handleAttachmentRemoveClick, { capture: true });

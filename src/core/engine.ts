@@ -186,7 +186,7 @@ async function assessInner(
       const scored = scoreFindings(findings, 0);
       sourceGroups.push({
         label: sources[i].label,
-        findings,
+        findings: scored.findings,
         score: scored.score,
         level: scored.level,
       });

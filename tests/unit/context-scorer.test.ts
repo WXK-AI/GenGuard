@@ -32,6 +32,7 @@ describe('context-scorer', () => {
       const result = scoreFindings(findings, 10);
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0].source).toBe('ner');
+      expect(result.findings[0].detectorSources).toEqual(['ner', 'regex']);
     });
 
     it('higher confidence wins within same source', () => {
@@ -201,6 +202,17 @@ describe('context-scorer', () => {
       expect(result.breakdown.regexCount).toBe(2);
       expect(result.breakdown.nerCount).toBe(1);
       expect(result.breakdown.ocrCount).toBe(0);
+    });
+
+    it('counts merged detector sources in breakdown', () => {
+      const result = scoreFindings([
+        mkFinding({ type: 'EMAIL', value: 'a@b.com', startIndex: 0, endIndex: 7, source: 'regex' }),
+        mkFinding({ type: 'EMAIL', value: 'a@b.com', startIndex: 0, endIndex: 7, source: 'ner' }),
+      ], 10);
+
+      expect(result.findings).toHaveLength(1);
+      expect(result.breakdown.regexCount).toBe(1);
+      expect(result.breakdown.nerCount).toBe(1);
     });
   });
 

@@ -232,7 +232,7 @@ export default function App() {
         lastLiveTabIdRef.current = tabId;
         setLiveTabId(tabId);
 
-        if (text.trim().length === 0) {
+        if (text.trim().length === 0 && liveFiles.length === 0) {
           assessGeneration++;
           setLiveAssessment(null);
           setLiveSource('');
@@ -279,7 +279,11 @@ export default function App() {
 
         if (serializedFiles.length === 0) return;
 
-        // Add new files to persistent list, dedup by name
+        if (msg.mode === 'replace') {
+          liveFiles.length = 0;
+        }
+
+        // Add files to the current attachment set, dedup by name.
         const existingNames = new Set(liveFiles.map((f) => f.name));
         for (const sf of serializedFiles) {
           if (existingNames.has(sf.name)) continue;
@@ -329,6 +333,53 @@ export default function App() {
             setLiveScanning(false);
           });
         }, 500);
+      } else if (msg.type === 'CLEAR_FILES') {
+        const tabId = msg.tabId;
+        const source = msg.source || '';
+        const currentText = lastLiveTextRef.current || '';
+        const gen = ++assessGeneration;
+        liveFiles.length = 0;
+        if (fileDebounceTimer) {
+          clearTimeout(fileDebounceTimer);
+          fileDebounceTimer = null;
+        }
+
+        lastLiveTabIdRef.current = tabId;
+        setLiveTabId(tabId);
+        setLiveAssessment(null);
+        setLiveSource('');
+
+        if (currentText.trim().length === 0) {
+          setLiveScanning(false);
+          chrome.runtime.sendMessage({
+            type: 'RISK_UPDATE_FROM_PANEL',
+            assessment: { score: 0, level: 'Safe', findings: [] },
+            tabId,
+            requestId: msg.requestId,
+            requestKind: msg.requestKind,
+          }).catch(() => {});
+          return;
+        }
+
+        setLiveScanning(true);
+        setTimeout(() => {
+          assess({ text: currentText }, settingsRef.current).then((result) => {
+            if (gen !== assessGeneration) return;
+            setLiveAssessment(result);
+            setLiveSource(source);
+            setLiveScanning(false);
+            chrome.runtime.sendMessage({
+              type: 'RISK_UPDATE_FROM_PANEL',
+              assessment: { score: result.score, level: result.level, findings: result.findings },
+              tabId,
+              requestId: msg.requestId,
+              requestKind: msg.requestKind,
+            }).catch(() => {});
+          }).catch((err) => {
+            console.error('[GenGuard] File clear reassessment failed:', err);
+            setLiveScanning(false);
+          });
+        }, 0);
       }
     });
 
@@ -458,6 +509,7 @@ function FindingRow({ f, allowRedaction, redactionMask, redactFindings }: {
   redactFindings: (findings: Finding[]) => void;
 }) {
   const canRedact = allowRedaction && f.inputSource === 'Textbox';
+  const detectorLabel = (f.detectorSources ?? [f.source]).join(' + ');
   return (
     <div className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-gray-700 pb-1">
       <div className="flex items-center gap-1.5 min-w-0">
@@ -470,7 +522,7 @@ function FindingRow({ f, allowRedaction, redactionMask, redactFindings }: {
           {f.type}
         </span>
         <span className="font-mono truncate">{f.value}</span>
-        <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{f.source}</span>
+        <span className="shrink-0 text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">{detectorLabel}</span>
       </div>
       <div className="flex items-center gap-1.5 shrink-0 ml-2">
         <span className="text-gray-400">{(f.confidence * 100).toFixed(1)}%</span>

@@ -8,6 +8,8 @@ export interface Finding {
   confidence: number;
   severity: Severity | 'low';
   source: 'ner' | 'regex' | 'ocr';
+  /** Detectors that matched this finding after deduplication. */
+  detectorSources?: Array<'ner' | 'regex' | 'ocr'>;
   /** Which input this finding came from (e.g. "Textbox", "report.pdf"). */
   inputSource?: string;
 }

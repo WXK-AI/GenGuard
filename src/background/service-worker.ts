@@ -211,7 +211,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === 'ASSESS_FILES') {
     // Forward serialized files from content script to side panel for assessment
     const hasAssessor = ports.size > 0;
-    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
+    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind, mode: msg.mode });
+    sendResponse({ ok: true, hasAssessor });
+  } else if (msg.type === 'CLEAR_FILES') {
+    // Forward explicit attachment removals so stale file findings disappear.
+    const hasAssessor = ports.size > 0;
+    broadcast({ type: 'CLEAR_FILES', source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
     sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'RISK_UPDATE_FROM_PANEL') {
     // Side panel sends back assessment — relay to the originating content script tab
