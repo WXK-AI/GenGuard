@@ -226,6 +226,7 @@ export default function App() {
       }).catch(() => {});
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handlePortMessage = (msg: any) => {
       if (msg.type === 'DOWNLOAD_STATUS') {
         setModel((prev) => ({
