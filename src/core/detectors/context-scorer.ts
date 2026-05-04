@@ -6,7 +6,7 @@
  * Deduplication strategy (overlap-aware):
  *   1. Sort findings by startIndex.
  *   2. Walk through; when two findings overlap:
- *        - NER always beats regex (it's contextually smarter).
+ *        - Regex wins for structured PII; NER wins only for fuzzy PII.
  *        - Within the same source, higher confidence wins.
  *        - If confidence is equal, the longer span wins (more specific).
  *   3. Non-overlapping findings are all kept.
@@ -32,30 +32,30 @@ function spans_overlap(a: Finding, b: Finding): boolean {
  * Given two overlapping findings, return the one to keep.
  *
  * Priority order:
- *   1. NER > regex  (model is contextually aware)
+ *   1. Regex > NER
  *   2. Higher confidence
  *   3. Longer span  (more specific detection)
  */
 function pickWinner(a: Finding, b: Finding): Finding {
-  const detectorSources = Array.from(new Set([
-    ...(a.detectorSources ?? [a.source]),
-    ...(b.detectorSources ?? [b.source]),
-  ])).sort();
-  const withSources = (winner: Finding): Finding => ({ ...winner, detectorSources });
+  const withWinnerSource = (winner: Finding): Finding => ({
+    ...winner,
+    detectorSources: [winner.source],
+  });
 
-  // NER beats regex
-  if (a.source === 'ner' && b.source === 'regex') return withSources(a);
-  if (b.source === 'ner' && a.source === 'regex') return withSources(b);
+  if (a.source !== b.source) {
+    if (a.source === 'regex') return withWinnerSource(a);
+    if (b.source === 'regex') return withWinnerSource(b);
+  }
 
   // Same source → higher confidence
   if (a.confidence !== b.confidence) {
-    return withSources(a.confidence > b.confidence ? a : b);
+    return withWinnerSource(a.confidence > b.confidence ? a : b);
   }
 
   // Same confidence → longer span
   const aLen = a.endIndex - a.startIndex;
   const bLen = b.endIndex - b.startIndex;
-  return withSources(aLen >= bLen ? a : b);
+  return withWinnerSource(aLen >= bLen ? a : b);
 }
 
 /**

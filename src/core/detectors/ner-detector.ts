@@ -96,10 +96,42 @@ interface WordPred {
 }
 
 const ENTITY_CONFIDENCE_FLOORS: Partial<Record<NEREntityType, number>> = {
-  ORG: 0.65,
-  PERSON: 0.45,
-  ADDRESS: 0.45,
+  ORGANISATION: 0.30,
+  PERSON: 0.30,
+  LOCATION: 0.30,
+  ADDR: 0.30,
 };
+
+const ALLOWED_NER_ENTITY_TYPES = new Set(Object.keys(NER_MODEL_CONTRACT.severityMap));
+
+const STRUCTURED_VALUE_RE = /(?:@|https?:\/\/|www\.|\b[A-Z]\d{7,}\b|\b[STFGM]\d{7}[A-Z]\b|\b\d{6}-\d{2}-\d{4}\b|\b\d{9,16}\b|\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b|\+\d|\b(?:nric|nik|cccd|npwp|nrc|passport|bank|account|phone|email|tax|license|licence)\b)/i;
+const HARD_NEGATIVE_RE = /\b(?:project\s+alpha|react|python|apple|microsoft|openai|google|chatgpt|gemini|finance\s+team)\b/i;
+const ORG_SUFFIX_RE = /\b(?:sdn\s+bhd|pte\s+ltd|ltd|limited|inc|corp|corporation|company|group|bank|hospital|university|ministry|department|agency|foundation)\b/i;
+const ADDRESS_CUE_RE = /\b(?:address|alamat|resides?|lives?|delivery|jalan|road|street|avenue|block|no\.?|unit|suite|floor|postcode|postal|zip)\b/i;
+
+function shouldSuppressNerEntity(tag: string, value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return true;
+  if (STRUCTURED_VALUE_RE.test(trimmed)) return true;
+  if (HARD_NEGATIVE_RE.test(trimmed)) return true;
+
+  if (tag === 'LOCATION') {
+    const commaParts = trimmed.split(',').map((p) => p.trim()).filter(Boolean);
+    if (commaParts.length > 2) return true;
+    if (/^\d/.test(trimmed)) return true;
+  }
+
+  if (tag === 'ORGANISATION') {
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (words.length === 1 && !ORG_SUFFIX_RE.test(trimmed) && !/^[A-Z][a-z]+bank\b/.test(trimmed)) return true;
+  }
+
+  if (tag === 'ADDR' && !ADDRESS_CUE_RE.test(trimmed) && !/\d/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * Step 1: Aggregate subword predictions → one prediction per word.
@@ -203,6 +235,11 @@ function mergeEntities(
     if (group.length === 0) return;
 
     const { tag } = getTag(group[0].label);
+    if (!ALLOWED_NER_ENTITY_TYPES.has(tag)) {
+      group = [];
+      return;
+    }
+
     const avgScore = group.reduce((s, w) => s + w.confidence, 0) / group.length;
 
     const entityThreshold = Math.max(
@@ -215,7 +252,7 @@ function mergeEntities(
       const endOffset = group[group.length - 1].end;
       const value = originalText.slice(startOffset, endOffset);
 
-      if (value.trim().length > 0) {
+      if (!shouldSuppressNerEntity(tag, value)) {
         const severity = NER_MODEL_CONTRACT.severityMap[tag as NEREntityType] ?? 'medium';
         findings.push({
           type: tag,

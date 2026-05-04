@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 .gitnexus
+.hf-upload/
+notebooks/
+scripts/
+test-pii-files/
+scripts/__pycache__/

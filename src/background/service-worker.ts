@@ -30,11 +30,34 @@ let ocrProgress = 0;
 let ocrError = '';
 
 const ports = new Set<chrome.runtime.Port>();
+type LiveUpdateStatus = 'ok' | 'offline' | 'error';
+
+const EMPTY_LIVE_ASSESSMENT = {
+  score: 0,
+  level: 'Safe',
+  findings: [],
+};
 
 function broadcast(msg: Record<string, unknown>) {
   for (const port of ports) {
     try { port.postMessage(msg); } catch { ports.delete(port); }
   }
+}
+
+function sendRiskUpdateToTab(
+  tabId: number | undefined,
+  requestId: unknown,
+  requestKind: unknown,
+  status: LiveUpdateStatus,
+) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, {
+    type: 'RISK_UPDATE',
+    assessment: EMPTY_LIVE_ASSESSMENT,
+    requestId,
+    requestKind,
+    status,
+  }).catch(() => {});
 }
 
 function sendDownloadStatus() {
@@ -206,17 +229,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'ASSESS_TEXT') {
     // Forward text from content script to side panel for assessment
     const hasAssessor = ports.size > 0;
-    broadcast({ type: 'ASSESS_TEXT', text: msg.text, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
+    const tabId = sender.tab?.id;
+    broadcast({ type: 'ASSESS_TEXT', text: msg.text, source: msg.source, tabId, requestId: msg.requestId, requestKind: msg.requestKind });
+    if (!hasAssessor) {
+      sendRiskUpdateToTab(tabId, msg.requestId, msg.requestKind, 'offline');
+    }
     sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'ASSESS_FILES') {
     // Forward serialized files from content script to side panel for assessment
     const hasAssessor = ports.size > 0;
-    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind, mode: msg.mode });
+    const tabId = sender.tab?.id;
+    broadcast({ type: 'ASSESS_FILES', files: msg.files, source: msg.source, tabId, requestId: msg.requestId, requestKind: msg.requestKind, mode: msg.mode });
+    if (!hasAssessor) {
+      sendRiskUpdateToTab(tabId, msg.requestId, msg.requestKind, 'offline');
+    }
     sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'CLEAR_FILES') {
     // Forward explicit attachment removals so stale file findings disappear.
     const hasAssessor = ports.size > 0;
-    broadcast({ type: 'CLEAR_FILES', source: msg.source, tabId: sender.tab?.id, requestId: msg.requestId, requestKind: msg.requestKind });
+    const tabId = sender.tab?.id;
+    broadcast({ type: 'CLEAR_FILES', source: msg.source, tabId, requestId: msg.requestId, requestKind: msg.requestKind });
+    if (!hasAssessor) {
+      sendRiskUpdateToTab(tabId, msg.requestId, msg.requestKind, 'offline');
+    }
     sendResponse({ ok: true, hasAssessor });
   } else if (msg.type === 'RISK_UPDATE_FROM_PANEL') {
     // Side panel sends back assessment — relay to the originating content script tab
@@ -226,6 +261,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         assessment: msg.assessment,
         requestId: msg.requestId,
         requestKind: msg.requestKind,
+        status: msg.status ?? 'ok',
       }).catch(() => {});
     }
     sendResponse({ ok: true });

@@ -24,15 +24,46 @@ describe('context-scorer', () => {
       expect(result.findings).toHaveLength(2);
     });
 
-    it('NER wins over regex when overlapping', () => {
+    it('regex wins when it overlaps the same fuzzy NER span', () => {
       const findings: Finding[] = [
         mkFinding({ type: 'PERSON', value: 'Ahmad', startIndex: 0, endIndex: 5, source: 'ner', confidence: 0.8 }),
         mkFinding({ type: 'PERSON', value: 'Ahmad', startIndex: 0, endIndex: 5, source: 'regex', confidence: 0.99 }),
       ];
       const result = scoreFindings(findings, 10);
       expect(result.findings).toHaveLength(1);
-      expect(result.findings[0].source).toBe('ner');
-      expect(result.findings[0].detectorSources).toEqual(['ner', 'regex']);
+      expect(result.findings[0].source).toBe('regex');
+      expect(result.findings[0].detectorSources).toEqual(['regex']);
+    });
+
+    it('keeps non-overlapping regex and NER findings separately', () => {
+      const findings: Finding[] = [
+        mkFinding({ type: 'ADDR', value: 'No. 12, Jalan Ampang', startIndex: 0, endIndex: 20, source: 'ner', confidence: 0.9 }),
+        mkFinding({ type: 'MY_POSTCODE', value: '50450', startIndex: 22, endIndex: 27, source: 'regex', confidence: 1.0 }),
+      ];
+      const result = scoreFindings(findings, 10);
+      expect(result.findings).toHaveLength(2);
+    });
+
+    it('regex wins even when overlapping a wider fuzzy NER span', () => {
+      const findings: Finding[] = [
+        mkFinding({ type: 'ADDR', value: 'No. 12, Jalan Ampang, 50450', startIndex: 0, endIndex: 27, source: 'ner', confidence: 0.9 }),
+        mkFinding({ type: 'MY_POSTCODE', value: '50450', startIndex: 22, endIndex: 27, source: 'regex', confidence: 1.0 }),
+      ];
+      const result = scoreFindings(findings, 10);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].source).toBe('regex');
+      expect(result.findings[0].type).toBe('MY_POSTCODE');
+    });
+
+    it('regex wins over NER for structured findings when overlapping', () => {
+      const findings: Finding[] = [
+        mkFinding({ type: 'PHONE', value: '012-3456789', startIndex: 0, endIndex: 11, source: 'regex', confidence: 1.0 }),
+        mkFinding({ type: 'PHONE', value: '012-3456789', startIndex: 0, endIndex: 11, source: 'ner', confidence: 0.99 }),
+      ];
+      const result = scoreFindings(findings, 10);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].source).toBe('regex');
+      expect(result.findings[0].detectorSources).toEqual(['regex']);
     });
 
     it('higher confidence wins within same source', () => {
@@ -204,7 +235,7 @@ describe('context-scorer', () => {
       expect(result.breakdown.ocrCount).toBe(0);
     });
 
-    it('counts merged detector sources in breakdown', () => {
+    it('counts only the winning detector source in breakdown', () => {
       const result = scoreFindings([
         mkFinding({ type: 'EMAIL', value: 'a@b.com', startIndex: 0, endIndex: 7, source: 'regex' }),
         mkFinding({ type: 'EMAIL', value: 'a@b.com', startIndex: 0, endIndex: 7, source: 'ner' }),
@@ -212,7 +243,7 @@ describe('context-scorer', () => {
 
       expect(result.findings).toHaveLength(1);
       expect(result.breakdown.regexCount).toBe(1);
-      expect(result.breakdown.nerCount).toBe(1);
+      expect(result.breakdown.nerCount).toBe(0);
     });
   });
 

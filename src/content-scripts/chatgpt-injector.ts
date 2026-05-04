@@ -315,7 +315,7 @@ function handleAttachmentRemoveClick(e: MouseEvent) {
 // ── Communication ────────────────────────────────────────────────────────────
 
 function sendToBackground(msg: Record<string, unknown>) {
-  chrome.runtime.sendMessage(msg).catch(() => {});
+  chrome.runtime.sendMessage(msg).catch(() => { });
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -368,22 +368,43 @@ function applyInlineHighlights(findings: HighlightFinding[]) {
 
 function performRedactions(replacements: { startIndex: number; endIndex: number; replacement: string }[]): boolean {
   if (!currentEditor) return false;
-  const text = getTextContent(currentEditor);
-  // Apply replacements from end to start to preserve indices
+  // Use trimmed text to match assessment indices (sendIfChanged sends trimmed text)
+  const text = getTextContent(currentEditor).trim();
+  // Process from end to start so earlier indices remain valid
   const sorted = [...replacements].sort((a, b) => b.startIndex - a.startIndex);
-  let result = text;
-  for (const r of sorted) {
-    result = result.slice(0, r.startIndex) + r.replacement + result.slice(r.endIndex);
-  }
-  // Write back to editor
+
   if (currentEditor instanceof HTMLTextAreaElement) {
+    let result = text;
+    for (const r of sorted) {
+      result = result.slice(0, r.startIndex) + r.replacement + result.slice(r.endIndex);
+    }
     currentEditor.value = result;
     currentEditor.dispatchEvent(new Event('input', { bubbles: true }));
   } else {
-    currentEditor.innerText = result;
-    currentEditor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    // Surgically modify only the specific text nodes that contain matched text.
+    // This preserves the editor's DOM structure (paragraphs, blank lines, etc.)
+    for (const r of sorted) {
+      const originalValue = text.substring(r.startIndex, r.endIndex);
+      if (!originalValue) continue;
+      const walker = document.createTreeWalker(currentEditor, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const content = node.textContent ?? '';
+        const idx = content.indexOf(originalValue);
+        if (idx !== -1) {
+          node.textContent = content.substring(0, idx) + r.replacement + content.substring(idx + originalValue.length);
+          break;
+        }
+      }
+    }
+    // DO NOT dispatch input event for contenteditable — it can cause the
+    // framework (React/ProseMirror) to re-render from internal state,
+    // collapsing blank lines and bumping requestId (which drops RISK_UPDATE).
+    // Our own scheduleAssessment() handles the re-scan.
   }
   lastSentText = ''; // Force re-scan
+  // Clear stale highlights — indices from old assessment no longer match
+  clearHighlights();
   scheduleAssessment();
   return true;
 }
@@ -416,7 +437,7 @@ function sendIfChanged() {
   const text = getTextContent(el).trim();
   const now = Date.now();
   const forceOfflineProbe = text.length > 0
-    && assessorState !== 'online'
+    && (assessorState === 'offline' || assessorState === 'error')
     && (now - lastOfflineProbeAt) >= OFFLINE_REPROBE_MS;
 
   if (text === lastSentText && !forceOfflineProbe) return;
@@ -460,7 +481,7 @@ function sendIfChanged() {
     assessorState = 'online';
     updateBadge();
     clearHighlights();
-    chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text: '', source: 'chatgpt', requestId, requestKind: 'text' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text: '', source: 'chatgpt', requestId, requestKind: 'text' }).catch(() => { });
   }
 }
 

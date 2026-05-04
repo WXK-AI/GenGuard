@@ -52,11 +52,11 @@ describe('engine', () => {
     });
 
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].source).toBe('ner');
-    expect(result.findings[0].detectorSources).toEqual(['ner', 'regex']);
+    expect(result.findings[0].source).toBe('regex');
+    expect(result.findings[0].detectorSources).toEqual(['regex']);
     expect(result.sourceGroups).toHaveLength(1);
     expect(result.sourceGroups[0].findings).toHaveLength(1);
-    expect(result.sourceGroups[0].findings[0].source).toBe('ner');
-    expect(result.sourceGroups[0].findings[0].detectorSources).toEqual(['ner', 'regex']);
+    expect(result.sourceGroups[0].findings[0].source).toBe('regex');
+    expect(result.sourceGroups[0].findings[0].detectorSources).toEqual(['regex']);
   });
 });

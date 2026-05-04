@@ -13,7 +13,7 @@ describe('getTag', () => {
   });
 
   it('parses I- prefix', () => {
-    expect(getTag('I-EMAIL')).toEqual({ bi: 'I', tag: 'EMAIL' });
+    expect(getTag('I-ADDR')).toEqual({ bi: 'I', tag: 'ADDR' });
   });
 
   it('returns I for plain label (O)', () => {
@@ -29,16 +29,14 @@ describe('getTag', () => {
 
 describe('softmaxArgmax', () => {
   it('returns the index of the maximum value', () => {
-    // 17 labels, max at index 2
-    const logits = new Float32Array(17).fill(-5);
+    const logits = new Float32Array(9).fill(-5);
     logits[2] = 5.0;
     const result = softmaxArgmax(logits, 0);
     expect(result.labelIdx).toBe(2);
   });
 
   it('returns high confidence when one logit dominates', () => {
-    // 17 labels, index 2 has a very large value
-    const logits = new Float32Array(17).fill(0);
+    const logits = new Float32Array(9).fill(0);
     logits[2] = 100;
     const result = softmaxArgmax(logits, 0);
     expect(result.labelIdx).toBe(2);
@@ -46,29 +44,25 @@ describe('softmaxArgmax', () => {
   });
 
   it('returns ~equal confidence for equal logits', () => {
-    // 17 equal logits → softmax = 1/17 for each
-    const logits = new Float32Array(17).fill(1);
+    const logits = new Float32Array(9).fill(1);
     const result = softmaxArgmax(logits, 0);
-    expect(result.confidence).toBeCloseTo(1 / 17, 2);
+    expect(result.confidence).toBeCloseTo(1 / 9, 2);
   });
 
   it('respects offset parameter', () => {
-    // softmaxArgmax uses NUM_LABELS (17) as stride, so we simulate
+    // softmaxArgmax uses the model label count as stride, so we simulate
     // by checking with explicit offset
-    // Actually, softmaxArgmax uses the global NUM_LABELS constant (17).
-    // We can't easily test with arbitrary NUM_LABELS, but we can test
     // that it works for position 0 with real-sized logits.
 
-    // Create a 17-element logit array where index 7 (B-PERSON) is highest
-    const realLogits = new Float32Array(17).fill(-5);
-    realLogits[7] = 10; // B-PERSON
+    const realLogits = new Float32Array(9).fill(-5);
+    realLogits[1] = 10; // B-PERSON
     const result = softmaxArgmax(realLogits, 0);
-    expect(result.labelIdx).toBe(7);
+    expect(result.labelIdx).toBe(1);
     expect(result.confidence).toBeGreaterThan(0.99);
   });
 
   it('handles negative logits', () => {
-    const logits = new Float32Array(17).fill(-100);
+    const logits = new Float32Array(9).fill(-100);
     logits[0] = -1; // O label — least negative
     const result = softmaxArgmax(logits, 0);
     expect(result.labelIdx).toBe(0);
@@ -112,12 +106,12 @@ describe('aggregateToWords', () => {
   });
 
   it('picks dominant non-O label by summed confidence', () => {
-    // Word 0 has 2 PERSON subwords (sum=1.6) vs 1 ORG subword (sum=0.95)
+    // Word 0 has 2 PERSON subwords (sum=1.6) vs 1 ORGANISATION subword (sum=0.95)
     const predictions = [
       { wordId: null, label: 'O', confidence: 0 },
       { wordId: 0, label: 'B-PERSON', confidence: 0.8 },
       { wordId: 0, label: 'I-PERSON', confidence: 0.8 },
-      { wordId: 0, label: 'B-ORG', confidence: 0.95 },
+      { wordId: 0, label: 'B-ORGANISATION', confidence: 0.95 },
       { wordId: null, label: 'O', confidence: 0 },
     ];
     const encoded = mkEncoded(
@@ -206,7 +200,7 @@ describe('mergeEntities', () => {
     const predictions = [
       { wordId: null, label: 'O', confidence: 0 },
       { wordId: 0, label: 'B-PERSON', confidence: 0.9 },
-      { wordId: 1, label: 'B-ORG', confidence: 0.85 },
+      { wordId: 1, label: 'B-ORGANISATION', confidence: 0.85 },
       { wordId: null, label: 'O', confidence: 0 },
     ];
     const encoded = mkEncoded(
@@ -217,7 +211,7 @@ describe('mergeEntities', () => {
     const findings = mergeEntities(predictions, encoded, text, 0.1);
     expect(findings).toHaveLength(2);
     expect(findings[0].type).toBe('PERSON');
-    expect(findings[1].type).toBe('ORG');
+    expect(findings[1].type).toBe('ORGANISATION');
   });
 
   it('filters low-confidence entities', () => {
@@ -237,11 +231,67 @@ describe('mergeEntities', () => {
     expect(findings).toHaveLength(0);
   });
 
-  it('uses a higher confidence floor for noisy ORG entities', () => {
+  it('ignores structured PII labels from NER output', () => {
+    const text = 'ali@example.com Ahmad';
+    const predictions = [
+      { wordId: null, label: 'O', confidence: 0 },
+      { wordId: 0, label: 'B-EMAIL', confidence: 0.99 },
+      { wordId: 1, label: 'B-PERSON', confidence: 0.9 },
+      { wordId: null, label: 'O', confidence: 0 },
+    ];
+    const encoded = mkEncoded(
+      [[0, 0], [0, 15], [16, 21], [0, 0]],
+      [null, 0, 1, null],
+    );
+
+    const findings = mergeEntities(predictions, encoded, text, 0.1);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('PERSON');
+  });
+
+  it('suppresses model spans that look like structured PII values', () => {
+    const text = 'ahmad.razali@example.com +60 12-345 6789 3174021234567890';
+    const predictions = [
+      { wordId: null, label: 'O', confidence: 0 },
+      { wordId: 0, label: 'B-ORGANISATION', confidence: 0.95 },
+      { wordId: 1, label: 'B-PERSON', confidence: 0.95 },
+      { wordId: 2, label: 'B-ORGANISATION', confidence: 0.95 },
+      { wordId: null, label: 'O', confidence: 0 },
+    ];
+    const encoded = mkEncoded(
+      [[0, 0], [0, 24], [25, 40], [41, 57], [0, 0]],
+      [null, 0, 1, 2, null],
+    );
+
+    const findings = mergeEntities(predictions, encoded, text, 0.1);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('suppresses hard-negative LOCATION lists', () => {
+    const text = 'Alpha, React, Python, Apple, Microsoft';
+    const predictions = [
+      { wordId: null, label: 'O', confidence: 0 },
+      { wordId: 0, label: 'B-LOCATION', confidence: 0.95 },
+      { wordId: 1, label: 'I-LOCATION', confidence: 0.95 },
+      { wordId: 2, label: 'I-LOCATION', confidence: 0.95 },
+      { wordId: 3, label: 'I-LOCATION', confidence: 0.95 },
+      { wordId: 4, label: 'I-LOCATION', confidence: 0.95 },
+      { wordId: null, label: 'O', confidence: 0 },
+    ];
+    const encoded = mkEncoded(
+      [[0, 0], [0, 5], [7, 12], [14, 20], [22, 27], [29, 38], [0, 0]],
+      [null, 0, 1, 2, 3, 4, null],
+    );
+
+    const findings = mergeEntities(predictions, encoded, text, 0.1);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('uses the normalized confidence floor for ORGANISATION entities', () => {
     const text = 'Maybank';
     const predictions = [
       { wordId: null, label: 'O', confidence: 0 },
-      { wordId: 0, label: 'B-ORG', confidence: 0.5 },
+      { wordId: 0, label: 'B-ORGANISATION', confidence: 0.5 },
       { wordId: null, label: 'O', confidence: 0 },
     ];
     const encoded = mkEncoded(
@@ -250,7 +300,12 @@ describe('mergeEntities', () => {
     );
 
     const findings = mergeEntities(predictions, encoded, text, 0.1);
-    expect(findings).toHaveLength(0);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      type: 'ORGANISATION',
+      value: 'Maybank',
+      confidence: 0.5,
+    });
   });
 
   it('skips empty/whitespace-only values', () => {
@@ -304,7 +359,7 @@ describe('mergeAdjacentFindings', () => {
     const text = 'Ahmad Maybank';
     const findings = [
       mkFind('PERSON', 'Ahmad', 0, 5),
-      mkFind('ORG', 'Maybank', 6, 13),
+      mkFind('ORGANISATION', 'Maybank', 6, 13),
     ];
 
     const merged = mergeAdjacentFindings(findings, text);

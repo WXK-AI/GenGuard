@@ -15,6 +15,8 @@ export interface HighlightFinding {
   endIndex: number;
   severity: string;
   type: string;
+  value?: string;
+  inputSource?: string;
 }
 
 export type HighlightIntensity = 'subtle' | 'normal' | 'bold';
@@ -122,44 +124,131 @@ export function setIntensity(intensity: HighlightIntensity) {
 
 /**
  * Convert a character offset range into a DOM Range within a contenteditable element.
- * Uses TreeWalker to walk text nodes and find the target offsets.
+ * Uses Range.toString() for prefix lengths so offsets follow the browser's
+ * rendered text serialization across contenteditable line/block boundaries.
  */
 function charOffsetToRange(
   root: HTMLElement,
   startOffset: number,
   endOffset: number,
 ): Range | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let charCount = 0;
-  let startNode: Text | null = null;
-  let startLocal = 0;
-  let endNode: Text | null = null;
-  let endLocal = 0;
+  const fullRange = document.createRange();
+  fullRange.selectNodeContents(root);
+  const textLength = fullRange.toString().length;
+  const clampedStart = Math.max(0, Math.min(startOffset, textLength));
+  const clampedEnd = Math.max(clampedStart, Math.min(endOffset, textLength));
 
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Text | null;
   while ((node = walker.nextNode() as Text | null)) {
-    const len = node.length;
-
-    if (!startNode && charCount + len > startOffset) {
-      startNode = node;
-      startLocal = startOffset - charCount;
-    }
-
-    if (!endNode && charCount + len >= endOffset) {
-      endNode = node;
-      endLocal = endOffset - charCount;
-      break;
-    }
-
-    charCount += len;
+    if (node.length > 0) textNodes.push(node);
   }
+  if (textNodes.length === 0) return null;
 
-  if (!startNode || !endNode) return null;
+  const prefixLength = (textNode: Text, localOffset: number): number => {
+    const prefixRange = document.createRange();
+    prefixRange.setStart(root, 0);
+    prefixRange.setEnd(textNode, localOffset);
+    return prefixRange.toString().length;
+  };
+
+  const findBoundary = (target: number): { node: Text; offset: number } | null => {
+    for (const textNode of textNodes) {
+      const before = prefixLength(textNode, 0);
+      const after = prefixLength(textNode, textNode.length);
+
+      if (target < before || target > after) continue;
+
+      let low = 0;
+      let high = textNode.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (prefixLength(textNode, mid) < target) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+
+      return { node: textNode, offset: low };
+    }
+    const last = textNodes[textNodes.length - 1];
+    return { node: last, offset: last.length };
+  };
+
+  const start = findBoundary(clampedStart);
+  const end = findBoundary(clampedEnd);
+  if (!start || !end) return null;
 
   try {
     const range = document.createRange();
-    range.setStart(startNode, startLocal);
-    range.setEnd(endNode, endLocal);
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    return range;
+  } catch {
+    return null;
+  }
+}
+
+function textNodeIndex(root: HTMLElement): { text: string; nodes: Array<{ node: Text; start: number; end: number }> } {
+  const nodes: Array<{ node: Text; start: number; end: number }> = [];
+  const parts: string[] = [];
+  let offset = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Text | null;
+
+  while ((node = walker.nextNode() as Text | null)) {
+    if (node.length === 0) continue;
+    nodes.push({ node, start: offset, end: offset + node.length });
+    parts.push(node.data);
+    offset += node.length;
+  }
+
+  return { text: parts.join(''), nodes };
+}
+
+function rawOffsetToBoundary(
+  nodes: Array<{ node: Text; start: number; end: number }>,
+  target: number,
+): { node: Text; offset: number } | null {
+  for (const entry of nodes) {
+    if (target < entry.start || target > entry.end) continue;
+    return { node: entry.node, offset: target - entry.start };
+  }
+
+  const last = nodes[nodes.length - 1];
+  return last ? { node: last.node, offset: last.node.length } : null;
+}
+
+function valueToRange(root: HTMLElement, finding: HighlightFinding): Range | null {
+  const value = finding.value?.trim();
+  if (!value) return null;
+
+  const index = textNodeIndex(root);
+  if (index.text.length === 0) return null;
+
+  const candidates: number[] = [];
+  let searchFrom = 0;
+  while (searchFrom <= index.text.length) {
+    const found = index.text.indexOf(value, searchFrom);
+    if (found === -1) break;
+    candidates.push(found);
+    searchFrom = found + Math.max(1, value.length);
+  }
+  if (candidates.length === 0) return null;
+
+  const bestStart = candidates.reduce((best, current) => (
+    Math.abs(current - finding.startIndex) < Math.abs(best - finding.startIndex) ? current : best
+  ));
+  const start = rawOffsetToBoundary(index.nodes, bestStart);
+  const end = rawOffsetToBoundary(index.nodes, bestStart + value.length);
+  if (!start || !end) return null;
+
+  try {
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
     return range;
   } catch {
     return null;
@@ -187,7 +276,8 @@ export function updateHighlights(editor: HTMLElement, findings: HighlightFinding
   if (findings.length === 0) return;
 
   for (const f of findings) {
-    const range = charOffsetToRange(editor, f.startIndex, f.endIndex);
+    if (f.inputSource && f.inputSource !== 'Textbox') continue;
+    const range = valueToRange(editor, f) ?? charOffsetToRange(editor, f.startIndex, f.endIndex);
     if (!range) continue;
 
     switch (f.severity) {

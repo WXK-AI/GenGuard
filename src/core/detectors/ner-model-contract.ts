@@ -1,7 +1,7 @@
 export const NER_MODEL_CONTRACT = {
   // Model hosted on HuggingFace — downloaded to IndexedDB on first use
-  hfRepoId: 'XkAI/piiranha-malaysia-v4-fp32',
-  hfFilename: 'model_quantized.onnx',
+  hfRepoId: 'XkAI/piiranha-asean-unified-v2-onnx',
+  hfFilename: 'onnx/model_quantized.onnx',
   tokenizerFilename: 'tokenizer.json',
   configFilename: 'config.json',
 
@@ -11,14 +11,10 @@ export const NER_MODEL_CONTRACT = {
   // EXACT order from config.json id2label
   labelList: [
     'O',
-    'B-IC_NUMBER', 'I-IC_NUMBER',
-    'B-PASSPORT',  'I-PASSPORT',
-    'B-PHONE',     'I-PHONE',
-    'B-PERSON',    'I-PERSON',
-    'B-ADDRESS',   'I-ADDRESS',
-    'B-EMAIL',     'I-EMAIL',
-    'B-BANK_ACCT', 'I-BANK_ACCT',
-    'B-ORG',       'I-ORG',
+    'B-PERSON',       'I-PERSON',
+    'B-ORGANISATION', 'I-ORGANISATION',
+    'B-LOCATION',     'I-LOCATION',
+    'B-ADDR',         'I-ADDR',
   ] as const,
 
   // Input tensor shapes — int64, dynamic batch + seq
@@ -28,7 +24,7 @@ export const NER_MODEL_CONTRACT = {
     attention_mask: { dtype: 'int64' as const, shape: [1, 256] as const },
   },
   outputs: {
-    logits: { dtype: 'float32' as const, shape: [1, 256, 17] as const },
+    logits: { dtype: 'float32' as const, shape: [1, 256, 9] as const },
   },
 
   // DeBERTa-v3 special tokens
@@ -42,17 +38,13 @@ export const NER_MODEL_CONTRACT = {
 
   // Severity mapping for scorer
   severityMap: {
-    IC_NUMBER:  'critical',
-    PASSPORT:   'critical',
-    BANK_ACCT:  'critical',
-    PHONE:      'high',
-    EMAIL:      'high',
-    ADDRESS:    'high',
-    PERSON:     'medium',
-    ORG:        'low',
+    PERSON:       'medium',
+    ORGANISATION: 'low',
+    LOCATION:     'low',
+    ADDR:         'high',
   } as const,
 } as const;
 
 export type NERLabel = typeof NER_MODEL_CONTRACT.labelList[number];
 export type NEREntityType = keyof typeof NER_MODEL_CONTRACT.severityMap;
-export type Severity = typeof NER_MODEL_CONTRACT.severityMap[NEREntityType];
+export type Severity = 'critical' | 'high' | 'medium' | 'low';

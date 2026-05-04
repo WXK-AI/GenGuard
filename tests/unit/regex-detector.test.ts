@@ -35,6 +35,12 @@ describe('regex-detector', () => {
       expect(phone!.severity).toBe('high');
     });
 
+    it('detects ASEAN international phone prefixes', () => {
+      const { findings } = detectRegex('SG: +65 9123 4567, TH: +66 8123 45678, VN: +84 912 345 678');
+      const phones = findings.filter((f) => f.type === 'PHONE');
+      expect(phones.length).toBeGreaterThanOrEqual(3);
+    });
+
     it('detects phone starting with 01', () => {
       const { findings } = detectRegex('Phone: 0192899378');
       expect(findings.find((f) => f.type === 'PHONE')).toBeDefined();
@@ -55,6 +61,44 @@ describe('regex-detector', () => {
     it('skips bare passport-like IDs without context', () => {
       const { findings } = detectRegex('Order A12345678 is ready');
       expect(findings.find((f) => f.type === 'PASSPORT')).toBeUndefined();
+    });
+  });
+
+  // ── ASEAN National IDs (context-required) ─────────────────────────────
+  describe('ASEAN national IDs', () => {
+    it('detects Singapore NRIC with identity context', () => {
+      const { findings } = detectRegex('NRIC number S1234567D belongs to the applicant.');
+      expect(findings.find((f) => f.type === 'SG_NRIC')).toBeDefined();
+    });
+
+    it('skips bare Singapore NRIC-like strings without context', () => {
+      const { findings } = detectRegex('Ticket S1234567D is queued.');
+      expect(findings.find((f) => f.type === 'SG_NRIC')).toBeUndefined();
+    });
+
+    it('detects Indonesia NIK with KTP context', () => {
+      const { findings } = detectRegex('KTP NIK 3174021234567890 was submitted.');
+      expect(findings.find((f) => f.type === 'ID_NIK')).toBeDefined();
+    });
+
+    it('detects Thai national ID with context', () => {
+      const { findings } = detectRegex('Thai national ID 1-2345-67890-12-3 was entered.');
+      expect(findings.find((f) => f.type === 'TH_NATIONAL_ID')).toBeDefined();
+    });
+
+    it('detects Vietnam CCCD with context', () => {
+      const { findings } = detectRegex('Citizen ID CCCD 012345678901 is on the form.');
+      expect(findings.find((f) => f.type === 'VN_CCCD')).toBeDefined();
+    });
+
+    it('detects Philippines national ID with context', () => {
+      const { findings } = detectRegex('PhilID number 1234-5678-9012-3456 was scanned.');
+      expect(findings.find((f) => f.type === 'PH_NATIONAL_ID')).toBeDefined();
+    });
+
+    it('detects Myanmar NRC with context', () => {
+      const { findings } = detectRegex('NRC 12/KaNaNa(N)123456 appears in the file.');
+      expect(findings.find((f) => f.type === 'MM_NRC')).toBeDefined();
     });
   });
 
@@ -106,6 +150,23 @@ describe('regex-detector', () => {
       for (const bf of bankFindings) {
         expect(bf.value).not.toMatch(/^\d{6}-\d{2}-\d{4}$/);
       }
+    });
+  });
+
+  describe('TAX_ID and DRIVER_LICENSE', () => {
+    it('detects tax IDs only with tax context', () => {
+      const { findings } = detectRegex('Tax ID NPWP 12.345.678.9-012.345 belongs to the vendor.');
+      expect(findings.find((f) => f.type === 'TAX_ID')).toBeDefined();
+    });
+
+    it('skips tax-like codes without tax context', () => {
+      const { findings } = detectRegex('Build ABC12345678 passed.');
+      expect(findings.find((f) => f.type === 'TAX_ID')).toBeUndefined();
+    });
+
+    it('detects driver license only with license context', () => {
+      const { findings } = detectRegex('Driving license D123456789 was provided.');
+      expect(findings.find((f) => f.type === 'DRIVER_LICENSE')).toBeDefined();
     });
   });
 

@@ -59,6 +59,7 @@ export default function App() {
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const settingsRef = useRef<Partial<GenGuardSettings>>({});
   const lastLiveTextRef = useRef<string>('');
+  const lastAssessedTextRef = useRef<string>('');
   const lastLiveTabIdRef = useRef<number | undefined>(undefined);
   const [liveTabId, setLiveTabId] = useState<number | undefined>(undefined);
   const [redactionMask, setRedactionMask] = useState<'brackets' | 'asterisks' | 'redacted'>('brackets');
@@ -190,6 +191,7 @@ export default function App() {
 
   // Live assessment state from content script
   const [liveAssessment, setLiveAssessment] = useState<RiskAssessment | null>(null);
+  const liveAssessmentRef = useRef<RiskAssessment | null>(null);
   const [liveSource, setLiveSource] = useState<string>('');
   const [liveScanning, setLiveScanning] = useState(false);
 
@@ -200,6 +202,7 @@ export default function App() {
     // Persistent list of all uploaded files for the current session
     const liveFiles: File[] = [];
     let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let textDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectDelayMs = 400;
     let disposed = false;
@@ -255,18 +258,41 @@ export default function App() {
 
         if (text.trim().length === 0 && liveFiles.length === 0) {
           assessGeneration++;
+          lastAssessedTextRef.current = '';
+          liveAssessmentRef.current = null;
           setLiveAssessment(null);
           setLiveSource('');
           setLiveScanning(false);
           return;
         }
 
+        // Skip if text hasn't changed since last submitted assessment
+        // (unless files changed, which would be handled by ASSESS_FILES)
+        if (text.trim() === lastAssessedTextRef.current && liveFiles.length === 0) {
+          // Still send an 'ok' response so the content script clears pending state.
+          // Use the REF (not state) — state is stale in this useEffect closure.
+          const cached = liveAssessmentRef.current;
+          sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'ok',
+            cached ? { score: cached.score, level: cached.level, findings: cached.findings } : undefined);
+          return;
+        }
+
+        // Mark this text as being assessed NOW — before async work starts.
+        // This prevents duplicate NER runs during the 4-second inference.
+        lastAssessedTextRef.current = text.trim();
+
         const gen = ++assessGeneration;
         setLiveScanning(true);
-        // Defer heavy work so React can paint the scanning indicator
-        setTimeout(() => {
+
+        // Debounce: wait 300ms for rapid-fire messages to settle
+        if (textDebounceTimer) clearTimeout(textDebounceTimer);
+        textDebounceTimer = setTimeout(() => {
+          textDebounceTimer = null;
+          // Re-check generation — a newer message may have arrived during debounce
+          if (gen !== assessGeneration) return;
           assess({ text, files: liveFiles.length > 0 ? liveFiles : undefined }, settingsRef.current).then((result) => {
-            if (gen !== assessGeneration) return;
+            // Accept the result even if gen drifted — the text was the same
+            liveAssessmentRef.current = result;
             setLiveAssessment(result);
             setLiveSource(source);
             setLiveScanning(false);
@@ -290,10 +316,12 @@ export default function App() {
             );
           }).catch((err) => {
             console.error('[GenGuard] Live assessment failed:', err);
+            // Reset so the text will be re-assessed on next attempt
+            lastAssessedTextRef.current = '';
             setLiveScanning(false);
             sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'error');
           });
-        }, 0);
+        }, 300);
       } else if (msg.type === 'ASSESS_FILES') {
         const serializedFiles: Array<{ name: string; type: string; data: number[] }> = msg.files ?? [];
         const tabId = msg.tabId;
@@ -329,6 +357,7 @@ export default function App() {
           console.log(`[GenGuard] Scanning ${liveFiles.length} file(s) from ${source}`);
           assess({ text: currentText || undefined, files: [...liveFiles] }, settingsRef.current).then((result) => {
             if (gen !== assessGeneration) return;
+            liveAssessmentRef.current = result;
             setLiveAssessment(result);
             setLiveSource(source);
             setLiveScanning(false);
@@ -369,6 +398,7 @@ export default function App() {
 
         lastLiveTabIdRef.current = tabId;
         setLiveTabId(tabId);
+        liveAssessmentRef.current = null;
         setLiveAssessment(null);
         setLiveSource('');
 
@@ -382,6 +412,7 @@ export default function App() {
         setTimeout(() => {
           assess({ text: currentText }, settingsRef.current).then((result) => {
             if (gen !== assessGeneration) return;
+            liveAssessmentRef.current = result;
             setLiveAssessment(result);
             setLiveSource(source);
             setLiveScanning(false);
@@ -453,6 +484,7 @@ export default function App() {
     return () => {
       disposed = true;
       if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
+      if (textDebounceTimer) clearTimeout(textDebounceTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       portRef.current?.disconnect();
       portRef.current = null;
@@ -540,7 +572,7 @@ export default function App() {
 
       <main className="p-4">
         {activeTab === 'dashboard' && (
-          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} liveScanning={liveScanning} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} liveTabId={liveTabId} redactionMask={redactionMask} />
+          <DashboardPage model={model} onDownload={handleDownloadModel} liveAssessment={liveAssessment} liveSource={liveSource} liveScanning={liveScanning} settingsRef={settingsRef} lastLiveTabIdRef={lastLiveTabIdRef} liveTabId={liveTabId} redactionMask={redactionMask} lastAssessedTextRef={lastAssessedTextRef} liveAssessmentRef={liveAssessmentRef} />
         )}
         {activeTab === 'history' && <HistoryPage />}
         {activeTab === 'settings' && <SettingsPage />}
@@ -600,13 +632,15 @@ function FindingRow({ f, allowRedaction, redactionMask, redactFindings }: {
 
 // ── Dashboard with NER Test ──────────────────────────────────────────────────
 
-function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScanning, settingsRef, lastLiveTabIdRef, liveTabId, redactionMask }: {
+function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScanning, settingsRef, lastLiveTabIdRef, liveTabId, redactionMask, lastAssessedTextRef, liveAssessmentRef }: {
   model: ModelState; onDownload: () => void;
   liveAssessment: RiskAssessment | null; liveSource: string; liveScanning: boolean;
   settingsRef: React.MutableRefObject<Partial<GenGuardSettings>>;
   lastLiveTabIdRef: React.MutableRefObject<number | undefined>;
   liveTabId: number | undefined;
   redactionMask: 'brackets' | 'asterisks' | 'redacted';
+  lastAssessedTextRef: React.MutableRefObject<string>;
+  liveAssessmentRef: React.MutableRefObject<RiskAssessment | null>;
 }) {
   const [testText, setTestText] = useState('');
   const [assessment, setAssessment] = useState<RiskAssessment | null>(null);
@@ -657,6 +691,9 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
     }));
     const tabId = lastLiveTabIdRef.current;
     if (tabId) {
+      // Reset dedup so the post-redaction text will be re-assessed
+      lastAssessedTextRef.current = '';
+      liveAssessmentRef.current = null;
       chrome.runtime.sendMessage({
         type: 'REDACT_IN_EDITOR',
         tabId,

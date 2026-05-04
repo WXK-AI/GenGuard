@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **genguard** (591 symbols, 1378 relationships, 50 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **genguard** (726 symbols, 1709 relationships, 61 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -97,5 +97,14 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Work in the Ort area (109 symbols) | `.claude/skills/generated/ort/SKILL.md` |
+| Work in the Content-scripts area (69 symbols) | `.claude/skills/generated/content-scripts/SKILL.md` |
+| Work in the Ocr area (22 symbols) | `.claude/skills/generated/ocr/SKILL.md` |
+| Work in the Sidepanel area (22 symbols) | `.claude/skills/generated/sidepanel/SKILL.md` |
+| Work in the Detectors area (21 symbols) | `.claude/skills/generated/detectors/SKILL.md` |
+| Work in the Background area (13 symbols) | `.claude/skills/generated/background/SKILL.md` |
+| Work in the Tokenizer area (13 symbols) | `.claude/skills/generated/tokenizer/SKILL.md` |
+| Work in the Scripts area (11 symbols) | `.claude/skills/generated/scripts/SKILL.md` |
+| Work in the Extractors area (5 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
 
 <!-- gitnexus:end -->

@@ -38,6 +38,7 @@ export interface RiskAssessment {
 }
 
 export type ModelStatus = 'not_loaded' | 'downloading' | 'loading' | 'ready' | 'error';
+export type LiveUpdateStatus = 'ok' | 'offline' | 'error';
 
 export interface ModelStatusInfo {
   ner: ModelStatus;
