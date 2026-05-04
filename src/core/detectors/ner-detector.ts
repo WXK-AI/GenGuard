@@ -112,6 +112,11 @@ const ADDRESS_CUE_RE = /\b(?:address|alamat|resides?|lives?|delivery|jalan|road|
 function shouldSuppressNerEntity(tag: string, value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
+
+  // Suppress completely redacted text so the scanner doesn't re-flag its own masks
+  if (/^\[[A-Z_]+\]$/i.test(trimmed)) return true; // Matches [PERSON], [REDACTED], etc.
+  if (/^[*#X-]+$/.test(trimmed)) return true;     // Matches ***, XXX, ###
+
   if (STRUCTURED_VALUE_RE.test(trimmed)) return true;
   if (HARD_NEGATIVE_RE.test(trimmed)) return true;
 
