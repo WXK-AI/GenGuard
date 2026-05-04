@@ -8,8 +8,80 @@
       "flags": "g"
     },
     {
+      "name": "SG_NRIC",
+      "label": "Singapore NRIC/FIN",
+      "regex": "\\b[STFGM]\\d{7}[A-Z]\\b",
+      "severity": "critical",
+      "flags": "gi",
+      "contextRequired": true
+    },
+    {
+      "name": "ID_NIK",
+      "label": "Indonesia NIK",
+      "regex": "\\b\\d{16}\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "TH_NATIONAL_ID",
+      "label": "Thai National ID",
+      "regex": "\\b\\d[-\\s]?\\d{4}[-\\s]?\\d{5}[-\\s]?\\d{2}[-\\s]?\\d\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "VN_CCCD",
+      "label": "Vietnam Citizen ID",
+      "regex": "\\b(?:\\d{9}|\\d{12})\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "PH_NATIONAL_ID",
+      "label": "Philippines National ID",
+      "regex": "\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "BN_IC",
+      "label": "Brunei Identity Card",
+      "regex": "\\b\\d{2}-?\\d{6}\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "MM_NRC",
+      "label": "Myanmar NRC",
+      "regex": "\\b(?:1[0-4]|[1-9])/[A-Za-z]{2,6}\\(N\\)\\d{6}\\b",
+      "severity": "critical",
+      "flags": "gi",
+      "contextRequired": true
+    },
+    {
+      "name": "KH_NATIONAL_ID",
+      "label": "Cambodia National ID",
+      "regex": "\\b\\d{9}\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "LA_ID",
+      "label": "Laos Identification Number",
+      "regex": "\\b[A-Z]{2}\\d{8}\\b",
+      "severity": "critical",
+      "flags": "gi",
+      "contextRequired": true
+    },
+    {
       "name": "PASSPORT",
-      "label": "Malaysian Passport",
+      "label": "Passport",
       "regex": "\\b[A-Z]\\d{8}\\b",
       "severity": "critical",
       "flags": "g",
@@ -17,10 +89,41 @@
     },
     {
       "name": "PHONE",
-      "label": "Malaysian Phone",
-      "regex": "(?:\\+?60|0)1\\d[-\\s]?\\d{3,4}[-\\s]?\\d{4}\\b",
+      "label": "ASEAN Phone",
+      "regex": "(?:\\+?(?:60|65|62|66|84|63|673|855|856|95|670)[-\\s]?\\d{1,4}(?:[-\\s]?\\d{3,4}){1,3}|\\b0\\d{1,2}[-\\s]?\\d{3,4}[-\\s]?\\d{4})\\b",
       "severity": "high",
       "flags": "g"
+    },
+    {
+      "name": "ID_NPWP",
+      "label": "Indonesia NPWP (Tax)",
+      "regex": "\\b\\d{2}\\.\\d{3}\\.\\d{3}\\.\\d-\\d{3}\\.\\d{3}\\b",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "PH_TIN",
+      "label": "Philippines TIN",
+      "regex": "\\b\\d{3}-\\d{3}-\\d{3}-\\d{3}\\b",
+      "severity": "critical",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "TAX_ID",
+      "label": "Tax Identification Number",
+      "regex": "\\b(?=[A-Z0-9.-]{8,24}\\b)(?=[A-Z0-9.-]*\\d)[A-Z0-9]+(?:[.-][A-Z0-9]+){0,5}\\b",
+      "severity": "critical",
+      "flags": "gi",
+      "contextRequired": true
+    },
+    {
+      "name": "DRIVER_LICENSE",
+      "label": "Driver License Number",
+      "regex": "\\b[A-Z]{1,3}\\d{5,12}\\b",
+      "severity": "critical",
+      "flags": "gi",
+      "contextRequired": true
     },
     {
       "name": "EMAIL",
@@ -59,6 +162,14 @@
       "flags": "g"
     },
     {
+      "name": "MY_VEHICLE",
+      "label": "Malaysian Vehicle Plate",
+      "regex": "\\b(?:[A-Z]{1,3}\\s?\\d{1,4}\\s?[A-Z]{0,3})\\b",
+      "severity": "medium",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
       "name": "IP_ADDRESS",
       "label": "IPv4 Address",
       "regex": "\\b(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\b",
@@ -87,6 +198,20 @@
       "flags": "g"
     },
     {
+      "name": "SLACK_TOKEN",
+      "label": "Slack Token",
+      "regex": "xox[bpors]-[A-Za-z0-9-]{10,250}",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
+      "name": "STRIPE_KEY",
+      "label": "Stripe API Key",
+      "regex": "(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{20,100}",
+      "severity": "critical",
+      "flags": "g"
+    },
+    {
       "name": "JWT",
       "label": "JSON Web Token",
       "regex": "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+",
@@ -102,8 +227,24 @@
     },
     {
       "name": "MY_POSTCODE",
-      "label": "Malaysian Postcode",
+      "label": "Malaysia/Thailand/Indonesia Postcode",
       "regex": "\\b\\d{5}\\b",
+      "severity": "low",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "SG_POSTCODE",
+      "label": "Singapore Postcode",
+      "regex": "\\b\\d{6}\\b",
+      "severity": "low",
+      "flags": "g",
+      "contextRequired": true
+    },
+    {
+      "name": "PH_POSTCODE",
+      "label": "Philippines Postcode",
+      "regex": "\\b\\d{4}\\b",
       "severity": "low",
       "flags": "g",
       "contextRequired": true

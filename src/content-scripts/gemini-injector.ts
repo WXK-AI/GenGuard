@@ -11,7 +11,7 @@
 
 import { updateHighlights, clearHighlights, isHighlightSupported, setIntensity } from './inline-highlighter';
 import type { HighlightFinding, HighlightIntensity } from './inline-highlighter';
-import type { GenGuardSettings } from '../core/types';
+import type { GenGuardSettings, LiveUpdateStatus } from '../core/types';
 
 console.log('[GenGuard] Gemini injector loaded');
 
@@ -25,13 +25,22 @@ let latestFileRequestId = 0;
 let textAssessmentPending = false;
 let fileAssessmentPending = false;
 let assessmentUnavailable = false;
+type AssessorState = 'online' | 'offline' | 'pending' | 'error';
+let assessorState: AssessorState = 'online';
+let lastOfflineProbeAt = 0;
+let textRequestTimer: ReturnType<typeof setTimeout> | null = null;
+let fileRequestTimer: ReturnType<typeof setTimeout> | null = null;
 let fileSessionActive = false;
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
 const watchedFileInputs = new WeakSet<HTMLInputElement>();
+/** Accumulated files across multiple file-input selections */
+const accumulatedFiles = new Map<string, File>();
+const OFFLINE_REPROBE_MS = 3000;
+const REQUEST_TIMEOUT_MS = 12000;
 
-// ── Settings (live-synced from chrome.storage) ───────────────��───────────────
+// ── Settings (live-synced from chrome.storage) ───────────────────────────────
 
 const settings = {
   enabled: true,
@@ -106,43 +115,113 @@ async function serializeFiles(files: File[]): Promise<Array<{ name: string; type
   return results;
 }
 
-function sendFilesForAssessment(serialized: Array<{ name: string; type: string; data: number[] }>) {
-  if (serialized.length === 0) return;
+function clearTextRequestTimer() {
+  if (textRequestTimer) {
+    clearTimeout(textRequestTimer);
+    textRequestTimer = null;
+  }
+}
+
+function clearFileRequestTimer() {
+  if (fileRequestTimer) {
+    clearTimeout(fileRequestTimer);
+    fileRequestTimer = null;
+  }
+}
+
+function startTextRequestTimeout(requestId: number) {
+  clearTextRequestTimer();
+  textRequestTimer = setTimeout(() => {
+    if (requestId !== latestTextRequestId || !textAssessmentPending) return;
+    textAssessmentPending = false;
+    assessmentUnavailable = true;
+    assessorState = 'error';
+    updateBadge();
+  }, REQUEST_TIMEOUT_MS);
+}
+
+function startFileRequestTimeout(requestId: number) {
+  clearFileRequestTimer();
+  fileRequestTimer = setTimeout(() => {
+    if (requestId !== latestFileRequestId || !fileAssessmentPending) return;
+    fileAssessmentPending = false;
+    assessmentUnavailable = true;
+    assessorState = 'error';
+    updateBadge();
+  }, REQUEST_TIMEOUT_MS);
+}
+
+/**
+ * Serialize and send ALL accumulated files to the sidepanel.
+ * The requestId is assigned BEFORE async serialization so that if
+ * clearFileAssessment() or another send runs during serialization,
+ * latestFileRequestId will have changed and the stale send is skipped.
+ */
+function sendAllAccumulatedFiles() {
+  if (accumulatedFiles.size === 0) return;
   const requestId = ++nextRequestId;
   latestFileRequestId = requestId;
   fileAssessmentPending = true;
   fileSessionActive = true;
   assessmentUnavailable = false;
-  console.log(`[GenGuard] Intercepted ${serialized.length} file(s) for scanning`);
-  chrome.runtime.sendMessage({
-    type: 'ASSESS_FILES',
-    files: serialized,
-    source: 'gemini',
-    requestId,
-    requestKind: 'files',
-    mode: 'replace',
-  }).then((response) => {
-    if (requestId === latestFileRequestId && response?.hasAssessor === false) {
+  assessorState = 'pending';
+  startFileRequestTimeout(requestId);
+
+  serializeFiles(Array.from(accumulatedFiles.values())).then((serialized) => {
+    // If a clear or newer send happened during serialization, abort
+    if (requestId !== latestFileRequestId) return;
+    if (serialized.length === 0) {
       fileAssessmentPending = false;
-      assessmentUnavailable = true;
+      assessorState = 'online';
+      clearFileRequestTimer();
       updateBadge();
+      return;
     }
+    console.log(`[GenGuard] Sending ${serialized.length} accumulated file(s) for scanning`);
+    chrome.runtime.sendMessage({
+      type: 'ASSESS_FILES',
+      files: serialized,
+      source: 'gemini',
+      requestId,
+      requestKind: 'files',
+      mode: 'replace',
+    }).then((response) => {
+      if (requestId === latestFileRequestId && response?.hasAssessor === false) {
+        fileAssessmentPending = false;
+        assessmentUnavailable = true;
+        assessorState = 'offline';
+        clearFileRequestTimer();
+        updateBadge();
+      }
+    }).catch(() => {
+      if (requestId === latestFileRequestId) {
+        fileAssessmentPending = false;
+        assessmentUnavailable = true;
+        assessorState = 'error';
+        clearFileRequestTimer();
+        updateBadge();
+      }
+    });
   }).catch(() => {
     if (requestId === latestFileRequestId) {
       fileAssessmentPending = false;
-      assessmentUnavailable = true;
+      assessorState = 'error';
+      clearFileRequestTimer();
       updateBadge();
     }
   });
 }
 
 function clearFileAssessment() {
+  accumulatedFiles.clear();
   if (!fileSessionActive && !fileAssessmentPending) return;
   const requestId = ++nextRequestId;
   latestFileRequestId = requestId;
   fileSessionActive = false;
   fileAssessmentPending = true;
   assessmentUnavailable = false;
+  assessorState = 'pending';
+  startFileRequestTimeout(requestId);
   chrome.runtime.sendMessage({
     type: 'CLEAR_FILES',
     source: 'gemini',
@@ -152,12 +231,16 @@ function clearFileAssessment() {
     if (requestId === latestFileRequestId && response?.hasAssessor === false) {
       fileAssessmentPending = false;
       assessmentUnavailable = true;
+      assessorState = 'offline';
+      clearFileRequestTimer();
       updateBadge();
     }
   }).catch(() => {
     if (requestId === latestFileRequestId) {
       fileAssessmentPending = false;
       assessmentUnavailable = true;
+      assessorState = 'error';
+      clearFileRequestTimer();
       updateBadge();
     }
   });
@@ -166,16 +249,14 @@ function clearFileAssessment() {
 function handleFileInputChange(e: Event) {
   if (!settings.enabled) return;
   const input = e.target as HTMLInputElement;
-  if (!input.files || input.files.length === 0) {
-    clearFileAssessment();
-    return;
-  }
+  // Platform resets file inputs after processing uploads (files becomes empty).
+  // Ignore these — only explicit remove-click should clear accumulated files.
+  if (!input.files || input.files.length === 0) return;
   const files = Array.from(input.files).filter(isScannableFile);
-  if (files.length === 0) {
-    clearFileAssessment();
-    return;
-  }
-  serializeFiles(files).then(sendFilesForAssessment);
+  if (files.length === 0) return;
+  // Accumulate new files (keyed by name to dedup)
+  for (const f of files) accumulatedFiles.set(f.name, f);
+  sendAllAccumulatedFiles();
 }
 
 function handlePasteWithFiles(e: ClipboardEvent) {
@@ -185,13 +266,19 @@ function handlePasteWithFiles(e: ClipboardEvent) {
     const file = item.getAsFile();
     if (file && isScannableFile(file)) files.push(file);
   }
-  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+  if (files.length > 0) {
+    for (const f of files) accumulatedFiles.set(f.name, f);
+    sendAllAccumulatedFiles();
+  }
 }
 
 function handleDropWithFiles(e: DragEvent) {
   if (!settings.enabled || !e.dataTransfer) return;
   const files = Array.from(e.dataTransfer.files).filter(isScannableFile);
-  if (files.length > 0) serializeFiles(files).then(sendFilesForAssessment);
+  if (files.length > 0) {
+    for (const f of files) accumulatedFiles.set(f.name, f);
+    sendAllAccumulatedFiles();
+  }
 }
 
 function isAttachmentRemoveTarget(target: EventTarget | null): boolean {
@@ -234,14 +321,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.requestKind === 'files' && msg.requestId !== latestFileRequestId) return;
       if (msg.requestKind !== 'files' && msg.requestId !== latestTextRequestId) return;
     }
-    lastAssessment = msg.assessment;
-    lastAssessedText = currentEditor ? getTextContent(currentEditor).trim() : lastSentText;
+    const status: LiveUpdateStatus = msg.status ?? 'ok';
     if (msg.requestKind === 'files') {
       fileAssessmentPending = false;
+      clearFileRequestTimer();
     } else {
       textAssessmentPending = false;
+      clearTextRequestTimer();
     }
+    if (status !== 'ok') {
+      assessmentUnavailable = true;
+      assessorState = status;
+      updateBadge();
+      return;
+    }
+    lastAssessment = msg.assessment;
+    lastAssessedText = currentEditor ? getTextContent(currentEditor).trim() : lastSentText;
     assessmentUnavailable = false;
+    assessorState = 'online';
     updateBadge();
     applyInlineHighlights(msg.assessment?.findings ?? []);
   } else if (msg.type === 'GET_PROMPT_TEXT') {
@@ -306,13 +403,23 @@ function sendIfChanged() {
   if (!el || !settings.enabled) return;
 
   const text = getTextContent(el).trim();
+  const now = Date.now();
+  const forceOfflineProbe = text.length > 0
+    && assessorState !== 'online'
+    && (now - lastOfflineProbeAt) >= OFFLINE_REPROBE_MS;
 
-  if (text === lastSentText) return;
-  lastSentText = text;
+  if (text === lastSentText && !forceOfflineProbe) return;
+  if (forceOfflineProbe) {
+    lastOfflineProbeAt = now;
+  } else {
+    lastSentText = text;
+  }
   const requestId = ++nextRequestId;
   latestTextRequestId = requestId;
   textAssessmentPending = true;
   assessmentUnavailable = false;
+  assessorState = 'pending';
+  startTextRequestTimeout(requestId);
 
   if (text.length > 0) {
     chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text, source: 'gemini', requestId, requestKind: 'text' })
@@ -320,6 +427,8 @@ function sendIfChanged() {
         if (requestId === latestTextRequestId && response?.hasAssessor === false) {
           textAssessmentPending = false;
           assessmentUnavailable = true;
+          assessorState = 'offline';
+          clearTextRequestTimer();
           updateBadge();
         }
       })
@@ -327,6 +436,8 @@ function sendIfChanged() {
         if (requestId === latestTextRequestId) {
           textAssessmentPending = false;
           assessmentUnavailable = true;
+          assessorState = 'error';
+          clearTextRequestTimer();
           updateBadge();
         }
       });
@@ -334,6 +445,8 @@ function sendIfChanged() {
     lastAssessment = null;
     lastAssessedText = '';
     textAssessmentPending = false;
+    clearTextRequestTimer();
+    assessorState = 'online';
     updateBadge();
     clearHighlights();
     chrome.runtime.sendMessage({ type: 'ASSESS_TEXT', text: '', source: 'gemini', requestId, requestKind: 'text' }).catch(() => {});
@@ -383,11 +496,17 @@ function interceptKeydown(e: KeyboardEvent) {
 
 function shouldBlockSubmit(): boolean {
   const text = currentEditor ? getTextContent(currentEditor).trim() : '';
-  if (text !== lastAssessedText) {
-    sendIfChanged();
+  if (text.length === 0 && !fileSessionActive) return false;
+  if (textAssessmentPending || fileAssessmentPending) return true;
+  // Block when assessor is offline/error so the modal warns the user.
+  // Must check BEFORE text comparison — lastAssessedText is never set when offline.
+  if ((assessorState === 'offline' || assessorState === 'error') && assessmentUnavailable) {
     return true;
   }
-  if (textAssessmentPending || fileAssessmentPending || assessmentUnavailable) return true;
+  if (text !== lastAssessedText) {
+    sendIfChanged();
+    return textAssessmentPending || fileAssessmentPending;
+  }
   return Boolean(lastAssessment && lastAssessment.score >= 20);
 }
 
@@ -414,7 +533,7 @@ function showWarningModal() {
         (<strong style="color: ${color}">${lastAssessment.level}</strong>)
         &mdash; ${lastAssessment.findings.length} finding(s)`
     : assessmentUnavailable
-      ? 'GenGuard needs the side panel open before it can assess this prompt.'
+      ? 'GenGuard is temporarily offline. Sending is allowed, and scanning will resume automatically.'
       : 'GenGuard is still assessing the latest prompt or file. Review before sending.';
 
   modal.innerHTML = `
@@ -490,6 +609,22 @@ function createBadge(): HTMLDivElement {
 
 function updateBadge() {
   if (!badge) return;
+
+  if (textAssessmentPending || fileAssessmentPending) {
+    badge.style.display = 'flex';
+    badge.style.background = '#2563eb';
+    badge.textContent = '…';
+    badge.title = 'GenGuard: assessing latest input';
+    return;
+  }
+
+  if (assessmentUnavailable) {
+    badge.style.display = 'flex';
+    badge.style.background = '#6b7280';
+    badge.textContent = '!';
+    badge.title = 'GenGuard: assessor offline, auto-retrying';
+    return;
+  }
 
   if (!lastAssessment || lastAssessment.score === 0) {
     badge.style.display = 'none';
@@ -573,8 +708,13 @@ function detach() {
   lastAssessedText = '';
   textAssessmentPending = false;
   fileAssessmentPending = false;
+  clearTextRequestTimer();
+  clearFileRequestTimer();
   fileSessionActive = false;
+  accumulatedFiles.clear();
   assessmentUnavailable = false;
+  assessorState = 'online';
+  lastOfflineProbeAt = 0;
 }
 
 // ── MutationObserver ───────��──────────────────────────���──────────────────────

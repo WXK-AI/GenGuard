@@ -17,17 +17,42 @@ interface PatternDef {
 }
 
 /** Context keywords that must appear near a postcode for it to be flagged. */
-const POSTCODE_CONTEXT = /\b(?:poskod|postcode|zip|kod\s?pos|alamat|address)\b/i;
+const POSTCODE_CONTEXT = /\b(?:poskod|postcode|zip|postal|kod\s?pos|alamat|address|ที่อยู่|ไปรษณีย์|địa\s+chỉ|mã\s+bưu\s+(?:chính|điện)|kode?\s?pos|alamat|barangay)\b/i;
 
 /** Context keywords for bank account numbers. */
-const BANK_CONTEXT = /\b(?:akaun|account|bank|acc|transfer|bayaran|payment|remit|wire|deposit|kredit|debit|simpanan|savings|semasa|current)\b/i;
+const BANK_CONTEXT = /\b(?:akaun|account|bank|acc|transfer|bayaran|payment|remit|wire|deposit|kredit|debit|simpanan|savings|semasa|current|rekening|tabungan|ธนาคาร|บัญชี|tài\s+khoản|ngân\s+hàng)\b/i;
 /** Context keywords for passport-like IDs, which are otherwise easy to confuse with product/order IDs. */
-const PASSPORT_CONTEXT = /\b(?:passport|pasport|travel\s+document|immigration|visa)\b/i;
+const PASSPORT_CONTEXT = /\b(?:passport|pasport|travel\s+document|immigration|visa|หนังสือเดินทาง|hộ\s+chiếu|paspor)\b/i;
+/** Context keywords for national IDs, which overlap with many order/account numeric formats. */
+const NATIONAL_ID_CONTEXT = /\b(?:national\s+id|identity\s+card|id\s+(?:card|number|no)|ic|nric|fin|nik|ktp|cccd|citizen\s+id|philid|mykad|nrc|kad\s+pengenalan|kartu\s+tanda\s+penduduk|เลข(?:ประจำตัว)?ประชาชน|บัตรประชาชน|căn\s*cước|chứng\s+minh|អត្តសញ្ញាណប័ណ្ណ|បណ្ណសម្គាល់ខ្លួន|บัตรประจำตัว|kad\s+pengenalan)\b/i;
+/** Context keywords for tax identifiers. */
+const TAX_CONTEXT = /\b(?:tax|tin|taxpayer|npwp|gst|vat|sst|bir|lhdn|hasil|revenue|ird|iras|cukai|pajak|ภาษี|thuế|เลขประจำตัวผู้เสียภาษี)\b/i;
+/** Context keywords for driver licence identifiers. */
+const DRIVER_LICENSE_CONTEXT = /\b(?:driver'?s?\s+licen[cs]e|driving\s+licen[cs]e|licen[cs]e\s+(?:no|number)|lesen\s+memandu|sim\s+[abc]|ใบขับขี่|giấy\s+phép\s+lái\s+xe|surat\s+izin\s+mengemudi)\b/i;
+/** Context keywords for Laos identification. */
+const LAOS_ID_CONTEXT = /\b(?:laos?\s+id|lao\s+(?:id|identity|national)|ບັດປະຈຳຕົວ|ໃບອະນຸຍາດ|id\s+(?:card|number|no))\b/i;
+/** Context keywords for vehicle registration plates. */
+const VEHICLE_CONTEXT = /\b(?:vehicle|plate|registration|number\s+plate|kenderaan|pendaftaran|plat\s+(?:nombor|no)|kereta|car|motor|ทะเบียนรถ|biển\s+số\s+xe|plat\s+nomor|nopol)\b/i;
 
 const CONTEXT_BY_PATTERN: Record<string, RegExp> = {
   BANK_ACCT: BANK_CONTEXT,
   PASSPORT: PASSPORT_CONTEXT,
   MY_POSTCODE: POSTCODE_CONTEXT,
+  SG_POSTCODE: POSTCODE_CONTEXT,
+  PH_POSTCODE: POSTCODE_CONTEXT,
+  SG_NRIC: NATIONAL_ID_CONTEXT,
+  ID_NIK: NATIONAL_ID_CONTEXT,
+  TH_NATIONAL_ID: NATIONAL_ID_CONTEXT,
+  VN_CCCD: NATIONAL_ID_CONTEXT,
+  PH_NATIONAL_ID: NATIONAL_ID_CONTEXT,
+  BN_IC: NATIONAL_ID_CONTEXT,
+  MM_NRC: NATIONAL_ID_CONTEXT,
+  KH_NATIONAL_ID: NATIONAL_ID_CONTEXT,
+  LA_ID: LAOS_ID_CONTEXT,
+  TAX_ID: TAX_CONTEXT,
+  PH_TIN: TAX_CONTEXT,
+  DRIVER_LICENSE: DRIVER_LICENSE_CONTEXT,
+  MY_VEHICLE: VEHICLE_CONTEXT,
 };
 
 /** Luhn checksum validation for credit card numbers. */

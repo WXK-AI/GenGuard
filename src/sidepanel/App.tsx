@@ -19,6 +19,7 @@ function getMaskText(finding: Finding, mask: 'brackets' | 'asterisks' | 'redacte
 
 type DownloadStatus = 'idle' | 'downloading' | 'cached' | 'error';
 type Tab = 'dashboard' | 'history' | 'settings' | 'model';
+type LiveUpdateStatus = 'ok' | 'offline' | 'error';
 
 const MODEL_CACHE_KEY = `${NER_MODEL_CONTRACT.hfRepoId}/${NER_MODEL_CONTRACT.hfFilename}`;
 const TOKENIZER_CACHE_KEY = `${NER_MODEL_CONTRACT.hfRepoId}/${NER_MODEL_CONTRACT.tokenizerFilename}`;
@@ -88,6 +89,7 @@ export default function App() {
               type: 'RISK_UPDATE_FROM_PANEL',
               assessment: { score: result.score, level: result.level, findings: result.findings },
               tabId,
+              status: 'ok',
             }).catch(() => {});
           }
         }).catch(() => {});
@@ -192,17 +194,36 @@ export default function App() {
   const [liveScanning, setLiveScanning] = useState(false);
 
   useEffect(() => {
-    const port = chrome.runtime.connect({ name: 'sidepanel' });
-    portRef.current = port;
-
     // Track generation to discard stale results from slow NER
     let assessGeneration = 0;
 
     // Persistent list of all uploaded files for the current session
     const liveFiles: File[] = [];
     let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectDelayMs = 400;
+    let disposed = false;
+    const MAX_RECONNECT_DELAY_MS = 5000;
 
-    port.onMessage.addListener((msg) => {
+    const sendLiveUpdate = (
+      tabId: number | undefined,
+      requestId: unknown,
+      requestKind: unknown,
+      status: LiveUpdateStatus,
+      assessment?: { score: number; level: string; findings: Finding[] },
+    ) => {
+      if (!tabId) return;
+      chrome.runtime.sendMessage({
+        type: 'RISK_UPDATE_FROM_PANEL',
+        assessment: assessment ?? { score: 0, level: 'Safe', findings: [] },
+        tabId,
+        requestId,
+        requestKind,
+        status,
+      }).catch(() => {});
+    };
+
+    const handlePortMessage = (msg: any) => {
       if (msg.type === 'DOWNLOAD_STATUS') {
         setModel((prev) => ({
           ...prev,
@@ -260,16 +281,17 @@ export default function App() {
                 computeTimeMs: result.computeTimeMs,
               }).catch(() => {});
             }
-            chrome.runtime.sendMessage({
-              type: 'RISK_UPDATE_FROM_PANEL',
-              assessment: { score: result.score, level: result.level, findings: result.findings },
+            sendLiveUpdate(
               tabId,
-              requestId: msg.requestId,
-              requestKind: msg.requestKind,
-            }).catch(() => {});
+              msg.requestId,
+              msg.requestKind,
+              'ok',
+              { score: result.score, level: result.level, findings: result.findings },
+            );
           }).catch((err) => {
             console.error('[GenGuard] Live assessment failed:', err);
             setLiveScanning(false);
+            sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'error');
           });
         }, 0);
       } else if (msg.type === 'ASSESS_FILES') {
@@ -321,16 +343,17 @@ export default function App() {
                 computeTimeMs: result.computeTimeMs,
               }).catch(() => {});
             }
-            chrome.runtime.sendMessage({
-              type: 'RISK_UPDATE_FROM_PANEL',
-              assessment: { score: result.score, level: result.level, findings: result.findings },
+            sendLiveUpdate(
               tabId,
-              requestId: msg.requestId,
-              requestKind: msg.requestKind,
-            }).catch(() => {});
+              msg.requestId,
+              msg.requestKind,
+              'ok',
+              { score: result.score, level: result.level, findings: result.findings },
+            );
           }).catch((err) => {
             console.error('[GenGuard] File assessment failed:', err);
             setLiveScanning(false);
+            sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'error');
           });
         }, 500);
       } else if (msg.type === 'CLEAR_FILES') {
@@ -351,13 +374,7 @@ export default function App() {
 
         if (currentText.trim().length === 0) {
           setLiveScanning(false);
-          chrome.runtime.sendMessage({
-            type: 'RISK_UPDATE_FROM_PANEL',
-            assessment: { score: 0, level: 'Safe', findings: [] },
-            tabId,
-            requestId: msg.requestId,
-            requestKind: msg.requestKind,
-          }).catch(() => {});
+          sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'ok');
           return;
         }
 
@@ -368,20 +385,54 @@ export default function App() {
             setLiveAssessment(result);
             setLiveSource(source);
             setLiveScanning(false);
-            chrome.runtime.sendMessage({
-              type: 'RISK_UPDATE_FROM_PANEL',
-              assessment: { score: result.score, level: result.level, findings: result.findings },
+            sendLiveUpdate(
               tabId,
-              requestId: msg.requestId,
-              requestKind: msg.requestKind,
-            }).catch(() => {});
+              msg.requestId,
+              msg.requestKind,
+              'ok',
+              { score: result.score, level: result.level, findings: result.findings },
+            );
           }).catch((err) => {
             console.error('[GenGuard] File clear reassessment failed:', err);
             setLiveScanning(false);
+            sendLiveUpdate(tabId, msg.requestId, msg.requestKind, 'error');
           });
         }, 0);
       }
-    });
+    };
+
+    const scheduleReconnect = () => {
+      if (disposed || reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectPort();
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
+      }, reconnectDelayMs);
+    };
+
+    const connectPort = () => {
+      if (disposed) return;
+      let port: chrome.runtime.Port;
+      try {
+        port = chrome.runtime.connect({ name: 'sidepanel' });
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+      portRef.current = port;
+      reconnectDelayMs = 400;
+      port.onMessage.addListener(handlePortMessage);
+      port.onDisconnect.addListener(() => {
+        if (portRef.current === port) {
+          portRef.current = null;
+        }
+        if (!disposed) {
+          scheduleReconnect();
+        }
+      });
+    };
+
+    connectPort();
 
     hasFile(MODEL_CACHE_KEY).then((cached) => {
       if (cached) {
@@ -399,7 +450,13 @@ export default function App() {
       },
     );
 
-    return () => { port.disconnect(); };
+    return () => {
+      disposed = true;
+      if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      portRef.current?.disconnect();
+      portRef.current = null;
+    };
   }, [loadOrtFromCache, loadOcrFromCache]);
 
   // Scan current tab's prompt text on mount / when model becomes ready
@@ -421,6 +478,7 @@ export default function App() {
                 type: 'RISK_UPDATE_FROM_PANEL',
                 assessment: { score: result.score, level: result.level, findings: result.findings },
                 tabId: tab.id,
+                status: 'ok',
               }).catch(() => {});
             }).catch(() => {});
           }
@@ -811,9 +869,9 @@ function ModelStatusPage({ model, ocr, onDownload, onDownloadOcr, onReload }: {
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
         <h2 className="text-sm font-semibold mb-3">NER Model</h2>
         <dl className="space-y-2 text-xs">
-          <Row label="Model" value="piiranha-malaysia-v4 quantized (DeBERTa-v3)" />
-          <Row label="Source" value="HuggingFace: XkAI/piiranha-malaysia-v4-fp32" />
-          <Row label="File" value="model_quantized.onnx" />
+          <Row label="Model" value={`${NER_MODEL_CONTRACT.hfRepoId.split('/')[1]} (${NER_MODEL_CONTRACT.architecture})`} />
+          <Row label="Source" value={`HuggingFace: ${NER_MODEL_CONTRACT.hfRepoId}`} />
+          <Row label="File" value={NER_MODEL_CONTRACT.hfFilename} />
           <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
           <Row label="Download" value={<DownloadLabel status={model.download} />} />
           <Row label="Inference" value={<OrtLabel status={model.ort} />} />
@@ -1066,7 +1124,7 @@ function SettingsPage() {
         <dl className="space-y-1 text-xs">
           <Row label="Version" value="0.1.0" />
           <Row label="Architecture" value="Zero-knowledge (client-side only)" />
-          <Row label="Model" value="piiranha-malaysia-v4 quantized (DeBERTa-v3)" />
+          <Row label="Model" value={`${NER_MODEL_CONTRACT.hfRepoId.split('/')[1]} (${NER_MODEL_CONTRACT.architecture})`} />
           <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
         </dl>
       </div>
