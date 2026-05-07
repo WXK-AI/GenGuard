@@ -136,6 +136,29 @@ function normalizeOcrText(text: string): string {
   return `${text}\n\nOCR NORMALIZED\n${uniqueLines.join('\n')}`;
 }
 
+type ExtractedFileText = { text: string; source: 'file' | 'pdf' | 'docx' | 'ocr' };
+const FILE_EXTRACTION_CACHE_LIMIT = 32;
+const fileExtractionCache = new Map<string, Promise<ExtractedFileText>>();
+
+function getFileExtractionCacheKey(file: File): string {
+  return JSON.stringify([file.name, file.type, file.size, file.lastModified]);
+}
+
+function rememberFileExtraction(key: string, extraction: Promise<ExtractedFileText>): Promise<ExtractedFileText> {
+  const guarded = extraction.catch((error) => {
+    fileExtractionCache.delete(key);
+    throw error;
+  });
+
+  if (!fileExtractionCache.has(key) && fileExtractionCache.size >= FILE_EXTRACTION_CACHE_LIMIT) {
+    const oldestKey = fileExtractionCache.keys().next().value;
+    if (oldestKey) fileExtractionCache.delete(oldestKey);
+  }
+
+  fileExtractionCache.set(key, guarded);
+  return guarded;
+}
+
 /**
  * Run regex + NER on a block of text, returning raw findings.
  */
@@ -163,7 +186,18 @@ async function scanText(
 /**
  * Extract text from a file based on its type.
  */
-async function extractFileText(file: File): Promise<{ text: string; source: 'file' | 'pdf' | 'docx' | 'ocr' }> {
+async function extractFileText(file: File): Promise<ExtractedFileText> {
+  const cacheKey = getFileExtractionCacheKey(file);
+  const cached = fileExtractionCache.get(cacheKey);
+  if (cached) {
+    console.debug(`[GenGuard] Reusing extracted text for "${file.name}"`);
+    return cached;
+  }
+
+  return rememberFileExtraction(cacheKey, extractFileTextUncached(file));
+}
+
+async function extractFileTextUncached(file: File): Promise<ExtractedFileText> {
   const name = file.name.toLowerCase();
   const type = file.type.toLowerCase();
 

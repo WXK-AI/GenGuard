@@ -165,4 +165,35 @@ describe('engine', () => {
     expect(scanned).toContain('50450');
     expect(scanned).not.toContain('Alamat kode pos 50450');
   });
+
+  it('reuses cached OCR text for unchanged files across assessments', async () => {
+    const { assess } = await import('../../src/core/engine');
+    const { extractTextFromImage } = await import('../../src/core/extractors/image-ocr');
+    vi.mocked(extractTextFromImage).mockClear();
+    vi.mocked(extractTextFromImage).mockResolvedValue({
+      text: 'NIK 3171011508900001',
+      timeMs: 123,
+      source: 'ocr',
+    });
+
+    const image = new File(['same bytes'], 'cached-ocr.png', {
+      type: 'image/png',
+      lastModified: 12345,
+    });
+    const text = new File(['Email: ali@example.com'], 'extra.txt', {
+      type: 'text/plain',
+      lastModified: 67890,
+    });
+
+    await assess({ files: [image] }, {
+      enableRegex: true,
+      enableNer: false,
+    });
+    await assess({ files: [image, text] }, {
+      enableRegex: true,
+      enableNer: false,
+    });
+
+    expect(extractTextFromImage).toHaveBeenCalledTimes(1);
+  });
 });

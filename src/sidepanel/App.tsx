@@ -324,7 +324,7 @@ export default function App() {
           });
         }, 300);
       } else if (msg.type === 'ASSESS_FILES') {
-        const serializedFiles: Array<{ name: string; type: string; data: number[] }> = msg.files ?? [];
+        const serializedFiles: Array<{ name: string; type: string; size?: number; lastModified?: number; data: number[] }> = msg.files ?? [];
         const tabId = msg.tabId;
         const source = msg.source || '';
 
@@ -340,7 +340,7 @@ export default function App() {
           if (existingNames.has(sf.name)) continue;
           existingNames.add(sf.name);
           const bytes = new Uint8Array(sf.data);
-          liveFiles.push(new File([bytes], sf.name, { type: sf.type }));
+          liveFiles.push(new File([bytes], sf.name, { type: sf.type, lastModified: sf.lastModified ?? Date.now() }));
         }
 
         lastLiveTabIdRef.current = tabId;

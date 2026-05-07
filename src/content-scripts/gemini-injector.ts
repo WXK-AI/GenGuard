@@ -31,6 +31,7 @@ let lastOfflineProbeAt = 0;
 let textRequestTimer: ReturnType<typeof setTimeout> | null = null;
 let fileRequestTimer: ReturnType<typeof setTimeout> | null = null;
 let fileSessionActive = false;
+let lastSentFileSetKey = '';
 let lastAssessment: { score: number; level: string; findings: unknown[] } | null = null;
 let currentEditor: HTMLElement | null = null;
 let badge: HTMLDivElement | null = null;
@@ -96,13 +97,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
 const SCANNABLE_TYPES = /\.(pdf|docx|txt|csv|json|md|log|html?|jpe?g|png|gif|bmp|webp|tiff?)$/i;
 const SCANNABLE_MIME = /^(application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|text\/|image\/)/;
 const MAX_SCANNABLE_FILE_BYTES = 8 * 1024 * 1024;
+type SerializedFile = { name: string; type: string; size: number; lastModified: number; data: number[] };
+type FileIdentity = Pick<File, 'name' | 'type' | 'size' | 'lastModified'>;
 
 function isScannableFile(file: File): boolean {
   return SCANNABLE_MIME.test(file.type) || SCANNABLE_TYPES.test(file.name);
 }
 
-async function serializeFiles(files: File[]): Promise<Array<{ name: string; type: string; data: number[] }>> {
-  const results: Array<{ name: string; type: string; data: number[] }> = [];
+function getFileSignature(file: FileIdentity): string {
+  return JSON.stringify([file.name, file.type, file.size, file.lastModified]);
+}
+
+function getFileSetKey(files: FileIdentity[]): string {
+  return files.map(getFileSignature).sort().join('\n');
+}
+
+async function serializeFiles(files: File[]): Promise<SerializedFile[]> {
+  const results: SerializedFile[] = [];
   for (const file of files) {
     if (!isScannableFile(file)) continue;
     if (file.size > MAX_SCANNABLE_FILE_BYTES) {
@@ -110,7 +121,13 @@ async function serializeFiles(files: File[]): Promise<Array<{ name: string; type
       continue;
     }
     const buf = await file.arrayBuffer();
-    results.push({ name: file.name, type: file.type, data: Array.from(new Uint8Array(buf)) });
+    results.push({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      lastModified: file.lastModified,
+      data: Array.from(new Uint8Array(buf)),
+    });
   }
   return results;
 }
@@ -147,6 +164,7 @@ function startFileRequestTimeout(requestId: number) {
     fileAssessmentPending = false;
     assessmentUnavailable = true;
     assessorState = 'error';
+    lastSentFileSetKey = '';
     updateBadge();
   }, REQUEST_TIMEOUT_MS);
 }
@@ -159,6 +177,14 @@ function startFileRequestTimeout(requestId: number) {
  */
 function sendAllAccumulatedFiles() {
   if (accumulatedFiles.size === 0) return;
+  const files = Array.from(accumulatedFiles.values());
+  const fileSetKey = getFileSetKey(files);
+  if (fileSetKey === lastSentFileSetKey) {
+    console.debug(`[GenGuard] Skipping duplicate file set (${files.length} file(s))`);
+    return;
+  }
+  lastSentFileSetKey = fileSetKey;
+
   const requestId = ++nextRequestId;
   latestFileRequestId = requestId;
   fileAssessmentPending = true;
@@ -167,10 +193,11 @@ function sendAllAccumulatedFiles() {
   assessorState = 'pending';
   startFileRequestTimeout(requestId);
 
-  serializeFiles(Array.from(accumulatedFiles.values())).then((serialized) => {
+  serializeFiles(files).then((serialized) => {
     // If a clear or newer send happened during serialization, abort
     if (requestId !== latestFileRequestId) return;
     if (serialized.length === 0) {
+      lastSentFileSetKey = '';
       fileAssessmentPending = false;
       assessorState = 'online';
       clearFileRequestTimer();
@@ -187,6 +214,7 @@ function sendAllAccumulatedFiles() {
       mode: 'replace',
     }).then((response) => {
       if (requestId === latestFileRequestId && response?.hasAssessor === false) {
+        lastSentFileSetKey = '';
         fileAssessmentPending = false;
         assessmentUnavailable = true;
         assessorState = 'offline';
@@ -195,6 +223,7 @@ function sendAllAccumulatedFiles() {
       }
     }).catch(() => {
       if (requestId === latestFileRequestId) {
+        lastSentFileSetKey = '';
         fileAssessmentPending = false;
         assessmentUnavailable = true;
         assessorState = 'error';
@@ -204,6 +233,7 @@ function sendAllAccumulatedFiles() {
     });
   }).catch(() => {
     if (requestId === latestFileRequestId) {
+      lastSentFileSetKey = '';
       fileAssessmentPending = false;
       assessorState = 'error';
       clearFileRequestTimer();
@@ -214,6 +244,7 @@ function sendAllAccumulatedFiles() {
 
 function clearFileAssessment() {
   accumulatedFiles.clear();
+  lastSentFileSetKey = '';
   if (!fileSessionActive && !fileAssessmentPending) return;
   const requestId = ++nextRequestId;
   latestFileRequestId = requestId;
@@ -756,6 +787,7 @@ function detach() {
   clearFileRequestTimer();
   fileSessionActive = false;
   accumulatedFiles.clear();
+  lastSentFileSetKey = '';
   assessmentUnavailable = false;
   assessorState = 'online';
   lastOfflineProbeAt = 0;
