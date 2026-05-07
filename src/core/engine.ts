@@ -34,6 +34,108 @@ const EMPTY_RESULT: RiskAssessment = {
   sourceGroups: [],
 };
 
+function stripHtmlToText(html: string): string {
+  if (typeof DOMParser !== 'undefined') {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script, style, noscript, template').forEach((el) => el.remove());
+    return doc.body?.textContent ?? doc.documentElement.textContent ?? '';
+  }
+
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function normalizeOcrIdentifierToken(value: string): string {
+  return value
+    .replace(/[Oo]/g, '0')
+    .replace(/[Il|!']/g, '1')
+    .replace(/[Ss]/g, '5')
+    .replace(/[Bb]/g, '8');
+}
+
+function formatNpwpDigits(digits: string): string {
+  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}.${digits.slice(8, 9)}-${digits.slice(9, 12)}.${digits.slice(12, 15)}`;
+}
+
+function formatIndonesianPhone(value: string): string | null {
+  const digits = normalizeOcrIdentifierToken(value).replace(/\D/g, '');
+  if (!digits.startsWith('62') || digits.length < 10 || digits.length > 15) return null;
+
+  const local = digits.slice(2);
+  if (local.length <= 3) return `+62 ${local}`;
+  if (local.length <= 7) return `+62 ${local.slice(0, 3)} ${local.slice(3)}`;
+  return `+62 ${local.slice(0, 3)} ${local.slice(3, 7)} ${local.slice(7)}`;
+}
+
+function hasStandaloneDigits(text: string, digits: string): boolean {
+  return new RegExp(`(?<!\\d)${digits}(?!\\d)`).test(text);
+}
+
+function hasRawPostcodeContext(text: string, postcode: string): boolean {
+  const match = new RegExp(`(?<!\\d)${postcode}(?!\\d)`).exec(text);
+  if (!match) return false;
+  const windowStart = Math.max(0, match.index - 80);
+  const windowEnd = Math.min(text.length, match.index + postcode.length + 80);
+  return /\b(?:poskod|postcode|zip|postal|kod\s?pos|alamat|address|kode?\s?pos)\b/i.test(text.slice(windowStart, windowEnd));
+}
+
+function normalizeOcrText(text: string): string {
+  const normalizedLines: string[] = [];
+  const compact = text.replace(/\s+/g, '');
+  const upperCompact = compact.toUpperCase();
+  const hasNikContext = /\bN[I1]?K\b|N[I1]?K[:：]?|NAMA.*N[I1]?K|NIK|NK/.test(upperCompact);
+
+  if (hasNikContext) {
+    for (const match of text.matchAll(/(?<!\d)\d{16}(?!\d)/g)) {
+      if (!hasStandaloneDigits(text, match[0])) normalizedLines.push(`NIK: ${match[0]}`);
+    }
+  }
+
+  for (const line of text.split(/\r?\n/)) {
+    if (hasNikContext) {
+      const trailingDigits = line.match(/[A-Za-z][A-Za-z0-9]*?(\d{16})$/);
+      if (trailingDigits) {
+        normalizedLines.push(`NIK: ${trailingDigits[1]}`);
+      }
+    }
+
+    for (const match of line.matchAll(/\+?\s*62[\s.:-]*\d{3}[\s.:-]*\d{3,4}[\s.:-]*\d{3,5}/g)) {
+      const phone = formatIndonesianPhone(match[0]);
+      if (phone && /[.:-]/.test(match[0])) normalizedLines.push(`NO HP: ${phone}`);
+    }
+
+    const labelledNpwp = line.match(/NPW[A-Z]*[:：]?\s*([0-9OILS'|!.,\s-]{12,24})/i);
+    if (labelledNpwp) {
+      const digits = normalizeOcrIdentifierToken(labelledNpwp[1]).replace(/\D/g, '');
+      if (digits.length >= 15) normalizedLines.push(`NPWP: ${formatNpwpDigits(digits.slice(0, 15))}`);
+    }
+
+    for (const match of line.matchAll(/[0-9OILS'|!]{2}\.[0-9OILS'|!]{3}\.[0-9OILS'|!]{3}\.[0-9OILS'|!]-[0-9OILS'|!]{3}\.[0-9OILS'|!]{3}/g)) {
+      const digits = normalizeOcrIdentifierToken(match[0]).replace(/\D/g, '');
+      if (digits.length >= 15) normalizedLines.push(`NPWP: ${formatNpwpDigits(digits.slice(0, 15))}`);
+    }
+
+    const postcodeMatch = line.match(/([0-9OIl|!']{5})\s*$/);
+    if (!postcodeMatch) continue;
+    const postcode = normalizeOcrIdentifierToken(postcodeMatch[1]).replace(/\D/g, '');
+    if (postcode.length === 5 && /alamat|address|kode\s*pos/i.test(text) && !hasRawPostcodeContext(text, postcode)) {
+      normalizedLines.push(`Alamat kode pos ${postcode}`);
+    }
+  }
+
+  const uniqueLines = [...new Set(normalizedLines)];
+  if (uniqueLines.length === 0) return text;
+  return `${text}\n\nOCR NORMALIZED\n${uniqueLines.join('\n')}`;
+}
+
 /**
  * Run regex + NER on a block of text, returning raw findings.
  */
@@ -66,6 +168,11 @@ async function extractFileText(file: File): Promise<{ text: string; source: 'fil
   const type = file.type.toLowerCase();
 
   // Plain text files
+  if (name.endsWith('.html') || name.endsWith('.htm') || type === 'text/html') {
+    const text = stripHtmlToText(await file.text());
+    return { text, source: 'file' };
+  }
+
   if (name.endsWith('.txt') || name.endsWith('.csv') || name.endsWith('.json') ||
       name.endsWith('.md') || name.endsWith('.log') || type.startsWith('text/')) {
     const text = await file.text();
@@ -93,7 +200,13 @@ async function extractFileText(file: File): Promise<{ text: string; source: 'fil
   // Images → OCR
   if (type.startsWith('image/') || /\.(jpe?g|png|gif|bmp|webp|tiff?)$/i.test(name)) {
     const result = await extractTextFromImage(file);
-    return { text: result.text, source: 'ocr' };
+    console.log(`[GenGuard] OCR extracted ${result.text.length} chars from "${file.name}" in ${result.timeMs}ms`);
+    console.log('[GenGuard][OCR raw]', file.name, result.text);
+    const normalizedText = normalizeOcrText(result.text);
+    if (normalizedText !== result.text) {
+      console.log('[GenGuard][OCR normalized]', file.name, normalizedText);
+    }
+    return { text: normalizedText, source: 'ocr' };
   }
 
   // Unsupported type — skip

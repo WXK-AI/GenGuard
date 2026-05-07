@@ -41,6 +41,11 @@ describe('regex-detector', () => {
       expect(phones.length).toBeGreaterThanOrEqual(3);
     });
 
+    it('does not detect phone substrings inside longer digit identifiers', () => {
+      const { findings } = detectRegex('NIK 3273025211950003 was submitted.');
+      expect(findings.find((f) => f.type === 'PHONE' && f.value === '950003')).toBeUndefined();
+    });
+
     it('detects phone starting with 01', () => {
       const { findings } = detectRegex('Phone: 0192899378');
       expect(findings.find((f) => f.type === 'PHONE')).toBeDefined();
@@ -49,6 +54,14 @@ describe('regex-detector', () => {
     it('detects phone with dashes', () => {
       const { findings } = detectRegex('Nombor: 012-345 6789');
       expect(findings.find((f) => f.type === 'PHONE')).toBeDefined();
+    });
+
+    it('suppresses OCR phone fragments that overlap normalized phone output', () => {
+      const { findings } = detectRegex(
+        'NPWP\n+62.812.3456.7890\nOCR NORMALIZED\nNO HP: +62 812 3456 7890',
+      );
+      expect(findings.find((f) => f.type === 'TAX_ID' && f.value === '62.812.3456.7890')).toBeUndefined();
+      expect(findings.find((f) => f.type === 'PHONE' && f.value === '+62 812 3456 7890')).toBeDefined();
     });
   });
 
@@ -79,6 +92,60 @@ describe('regex-detector', () => {
     it('detects Indonesia NIK with KTP context', () => {
       const { findings } = detectRegex('KTP NIK 3174021234567890 was submitted.');
       expect(findings.find((f) => f.type === 'ID_NIK')).toBeDefined();
+    });
+
+    it('detects Indonesia NIK values in flattened table text with a NIK column header', () => {
+      const text =
+        'NameNIK (16-Digit)Phone NumberAddress' +
+        'Budi Santoso3171011508900001+62 812 3456 7890Jl. Melati No. 12, Tebet, Jakarta Selatan' +
+        'Siti Aminah3273025211950003+62 856 9876 5432Gg. Kelinci No. 45, Coblong, Bandung' +
+        'Agus Prasetyo3578052003880005+62 819 1234 5678Jl. Manyar Kertoarjo No. 8, Mulyorejo, Surabaya' +
+        'Dewi Lestari5171034106920002+62 878 5555 4444Perumahan Nusa Dua Block C, Kuta Selatan, Bali';
+
+      const { findings } = detectRegex(text);
+      const nikValues = findings.filter((f) => f.type === 'ID_NIK').map((f) => f.value);
+
+      expect(nikValues).toEqual([
+        '3171011508900001',
+        '3273025211950003',
+        '3578052003880005',
+        '5171034106920002',
+      ]);
+    });
+
+    it('detects Indonesia NIK values in spaced table text with a NIK column header', () => {
+      const text =
+        'Nama            NIK                 Telepon              NPWP\n' +
+        'Budi Santoso    3171011508900001    +62 812 3456 7890    12.345.678.9-012.345\n' +
+        'Siti Aminah     3273025211950003    +62 856 9876 5432    98.765.432.1-098.765\n' +
+        'Agus Prasetyo   3578052003880005    +62 819 1234 5678    11.222.333.4-555.666';
+
+      const { findings } = detectRegex(text);
+      const nikValues = findings.filter((f) => f.type === 'ID_NIK').map((f) => f.value);
+
+      expect(nikValues).toEqual([
+        '3171011508900001',
+        '3273025211950003',
+        '3578052003880005',
+      ]);
+    });
+
+    it('skips bare 16-digit values without NIK context', () => {
+      const { findings } = detectRegex('Order 3171011508900001 was shipped.');
+      expect(findings.find((f) => f.type === 'ID_NIK')).toBeUndefined();
+    });
+
+    it('does not use a distant NIK header to classify a credit card as ID_NIK', () => {
+      const text =
+        'NameNIK (16-Digit)Phone NumberAddress' +
+        'Budi Santoso3171011508900001+62 812 3456 7890Jl. Melati No. 12, Tebet, Jakarta Selatan ' +
+        'Credit card 4532015112830366';
+
+      const { findings } = detectRegex(text);
+
+      expect(findings.find((f) => f.type === 'ID_NIK' && f.value === '3171011508900001')).toBeDefined();
+      expect(findings.find((f) => f.type === 'ID_NIK' && f.value === '4532015112830366')).toBeUndefined();
+      expect(findings.find((f) => f.type === 'CREDIT_CARD' && f.value === '4532015112830366')).toBeDefined();
     });
 
     it('detects Thai national ID with context', () => {
@@ -151,6 +218,12 @@ describe('regex-detector', () => {
         expect(bf.value).not.toMatch(/^\d{6}-\d{2}-\d{4}$/);
       }
     });
+
+    it('skips valid credit card numbers even with bank context', () => {
+      const { findings } = detectRegex('Bank account number 4532015112830366');
+      expect(findings.find((f) => f.type === 'BANK_ACCT')).toBeUndefined();
+      expect(findings.find((f) => f.type === 'CREDIT_CARD')).toBeDefined();
+    });
   });
 
   describe('TAX_ID and DRIVER_LICENSE', () => {
@@ -175,6 +248,14 @@ describe('regex-detector', () => {
     it('detects postcode with address context', () => {
       const { findings } = detectRegex('Alamat: Jalan 1, 50000 KL');
       expect(findings.find((f) => f.type === 'MY_POSTCODE')).toBeDefined();
+    });
+
+    it('suppresses OCR postcode fragments inside phone numbers when normalized output exists', () => {
+      const { findings } = detectRegex(
+        'Alamat\n+62.819.1234.5678\nOCR NORMALIZED\nNO HP: +62 819 1234 5678',
+      );
+      expect(findings.find((f) => f.type === 'PH_POSTCODE' && f.value === '1234')).toBeUndefined();
+      expect(findings.find((f) => f.type === 'PH_POSTCODE' && f.value === '5678')).toBeUndefined();
     });
 
     it('skips 5-digit number without address context', () => {

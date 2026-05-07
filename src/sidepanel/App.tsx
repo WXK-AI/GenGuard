@@ -780,7 +780,7 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".txt,.csv,.json,.md,.log,.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+            accept=".txt,.csv,.json,.md,.log,.html,.htm,.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp"
             onChange={handleFileChange}
             className="hidden"
           />

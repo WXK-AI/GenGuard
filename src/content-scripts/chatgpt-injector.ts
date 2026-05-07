@@ -98,7 +98,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── File Interception ────────────────────────────────────────────────────────
 
-const SCANNABLE_TYPES = /\.(pdf|docx|txt|csv|json|md|log|jpe?g|png|gif|bmp|webp|tiff?)$/i;
+const SCANNABLE_TYPES = /\.(pdf|docx|txt|csv|json|md|log|html?|jpe?g|png|gif|bmp|webp|tiff?)$/i;
 const SCANNABLE_MIME = /^(application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|text\/|image\/)/;
 const MAX_SCANNABLE_FILE_BYTES = 8 * 1024 * 1024;
 
@@ -288,19 +288,21 @@ function handleDropWithFiles(e: DragEvent) {
 
 function isAttachmentRemoveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
-  const control = target.closest<HTMLElement>('button, [role="button"], [aria-label], [title], [data-testid]');
+  const control = target.closest<HTMLElement>('button, [role="button"], [aria-label], [title], [data-testid], [data-test-id]');
   if (!control) return false;
   const context = target.closest<HTMLElement>(
-    '[data-testid*="attachment" i], [data-testid*="file" i], ' +
+    '[data-testid*="attachment" i], [data-test-id*="attachment" i], [data-testid*="file" i], [data-test-id*="file" i], ' +
     '[aria-label*="attachment" i], [aria-label*="file" i]'
   );
   const label = [
     control.getAttribute('aria-label'),
     control.getAttribute('title'),
     control.getAttribute('data-testid'),
+    control.getAttribute('data-test-id'),
     control.textContent,
     context?.getAttribute('aria-label'),
     context?.getAttribute('data-testid'),
+    context?.getAttribute('data-test-id'),
     context?.textContent,
   ].filter(Boolean).join(' ').toLowerCase();
   const looksLikeFile = Boolean(context) || SCANNABLE_TYPES.test(label);
@@ -779,13 +781,40 @@ const observer = new MutationObserver(() => {
     }
   }
 
-  // Watch for new file inputs (ChatGPT adds them dynamically)
-  document.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => {
-    if (watchedFileInputs.has(input)) return;
-    watchedFileInputs.add(input);
-    input.addEventListener('change', handleFileInputChange);
-  });
+  // Watch for file inputs — scan light DOM and shadow DOMs
+  scanForFileInputs(document.body);
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
 document.addEventListener('click', handleAttachmentRemoveClick, { capture: true });
+
+// Capture drop events on the whole document. ChatGPT upload targets are not
+// always descendants of the prompt editor.
+document.addEventListener('drop', handleDropWithFiles as EventListener, { capture: true });
+
+// Capture file input changes even when the input is added and clicked before
+// MutationObserver wiring runs.
+document.addEventListener('change', (e: Event) => {
+  const target = e.target;
+  if (target instanceof HTMLInputElement && target.type === 'file') {
+    handleFileInputChange(e);
+  }
+}, { capture: true });
+
+/**
+ * Recursively scan for file inputs in light and shadow DOMs.
+ * ChatGPT can render upload controls outside the prompt subtree.
+ */
+function scanForFileInputs(root: Element | Document | ShadowRoot) {
+  root.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => {
+    if (watchedFileInputs.has(input)) return;
+    watchedFileInputs.add(input);
+    input.addEventListener('change', handleFileInputChange);
+  });
+
+  root.querySelectorAll('*').forEach((el) => {
+    if (el.shadowRoot) {
+      scanForFileInputs(el.shadowRoot);
+    }
+  });
+}
