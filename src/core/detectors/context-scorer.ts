@@ -21,6 +21,8 @@ const SEVERITY_WEIGHTS: Record<string, number> = {
   low: 5,
 };
 
+const POSTCODE_TYPES = new Set(['MY_POSTCODE', 'SG_POSTCODE', 'PH_POSTCODE']);
+
 /**
  * Check whether two findings' character spans overlap.
  */
@@ -28,19 +30,47 @@ function spans_overlap(a: Finding, b: Finding): boolean {
   return a.startIndex < b.endIndex && b.startIndex < a.endIndex;
 }
 
+function spanContains(outer: Finding, inner: Finding): boolean {
+  return outer.startIndex <= inner.startIndex && outer.endIndex >= inner.endIndex;
+}
+
+function isAddressFinding(finding: Finding): boolean {
+  return finding.source === 'ner' && finding.type === 'ADDR';
+}
+
+function isPostcodeFinding(finding: Finding): boolean {
+  return finding.source === 'regex' && POSTCODE_TYPES.has(finding.type);
+}
+
+function mergeAddressPostcode(a: Finding, b: Finding): Finding | null {
+  if (isAddressFinding(a) && isPostcodeFinding(b) && spanContains(a, b)) {
+    return { ...a, detectorSources: ['ner', 'regex'] };
+  }
+
+  if (isAddressFinding(b) && isPostcodeFinding(a) && spanContains(b, a)) {
+    return { ...b, detectorSources: ['ner', 'regex'] };
+  }
+
+  return null;
+}
+
 /**
  * Given two overlapping findings, return the one to keep.
  *
  * Priority order:
- *   1. Regex > NER
- *   2. Higher confidence
- *   3. Longer span  (more specific detection)
+ *   1. NER ADDR absorbs contained postcode regex evidence
+ *   2. Regex > NER
+ *   3. Higher confidence
+ *   4. Longer span  (more specific detection)
  */
 function pickWinner(a: Finding, b: Finding): Finding {
   const withWinnerSource = (winner: Finding): Finding => ({
     ...winner,
     detectorSources: [winner.source],
   });
+
+  const addressPostcode = mergeAddressPostcode(a, b);
+  if (addressPostcode) return addressPostcode;
 
   if (a.source !== b.source) {
     if (a.source === 'regex') return withWinnerSource(a);

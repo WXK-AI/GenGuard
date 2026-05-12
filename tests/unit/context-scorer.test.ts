@@ -44,15 +44,56 @@ describe('context-scorer', () => {
       expect(result.findings).toHaveLength(2);
     });
 
-    it('regex wins even when overlapping a wider fuzzy NER span', () => {
+    it('merges contained postcode regex evidence into a wider NER address span', () => {
       const findings: Finding[] = [
         mkFinding({ type: 'ADDR', value: 'No. 12, Jalan Ampang, 50450', startIndex: 0, endIndex: 27, source: 'ner', confidence: 0.9 }),
         mkFinding({ type: 'MY_POSTCODE', value: '50450', startIndex: 22, endIndex: 27, source: 'regex', confidence: 1.0 }),
       ];
       const result = scoreFindings(findings, 10);
       expect(result.findings).toHaveLength(1);
-      expect(result.findings[0].source).toBe('regex');
-      expect(result.findings[0].type).toBe('MY_POSTCODE');
+      expect(result.findings[0]).toMatchObject({
+        type: 'ADDR',
+        value: 'No. 12, Jalan Ampang, 50450',
+        startIndex: 0,
+        endIndex: 27,
+        source: 'ner',
+        confidence: 0.9,
+        detectorSources: ['ner', 'regex'],
+      });
+      expect(result.breakdown.nerCount).toBe(1);
+      expect(result.breakdown.regexCount).toBe(1);
+    });
+
+    it.each([
+      ['MY_POSTCODE', 'Alamat: No. 88, Jalan Tun Razak, 50400 Kuala Lumpur', '50400'],
+      ['SG_POSTCODE', 'Address: 10 Anson Road, International Plaza, 079903 Singapore', '079903'],
+      ['PH_POSTCODE', 'Address: 123 Session Road, Baguio City, 2600 Philippines', '2600'],
+    ])('keeps NER address when contained %s regex also matches', (postcodeType, address, postcode) => {
+      const postcodeStart = address.indexOf(postcode);
+      const findings: Finding[] = [
+        mkFinding({ type: 'ADDR', value: address, startIndex: 0, endIndex: address.length, source: 'ner', confidence: 0.9 }),
+        mkFinding({
+          type: postcodeType,
+          value: postcode,
+          startIndex: postcodeStart,
+          endIndex: postcodeStart + postcode.length,
+          source: 'regex',
+          confidence: 1.0,
+          severity: 'low',
+        }),
+      ];
+
+      const result = scoreFindings(findings, 10);
+
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0]).toMatchObject({
+        type: 'ADDR',
+        value: address,
+        startIndex: 0,
+        endIndex: address.length,
+        source: 'ner',
+        detectorSources: ['ner', 'regex'],
+      });
     });
 
     it('regex wins over NER for structured findings when overlapping', () => {
