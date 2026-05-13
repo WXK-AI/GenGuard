@@ -1,10 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getFile, hasFile, downloadTextFile } from '../lib/model-store';
 import { NER_MODEL_CONTRACT } from '../core/detectors/ner-model-contract';
-import { OCR_MODEL_CONTRACT } from '../core/extractors/ocr/ocr-contract';
 import { initSession, dispose, isReady, type OrtStatus } from '../lib/ort-engine';
 import { initTokenizer, isTokenizerReady } from '../core/detectors/ner-detector';
-import { initOcrSessions, isOcrReady, disposeOcr } from '../core/extractors/ocr/ocr-engine';
 import { assess } from '../core/engine';
 import { addHistoryEntry, getHistory, clearHistory, type HistoryEntry } from '../lib/history-store';
 import { DEFAULT_NER_CONFIDENCE_THRESHOLD, type Finding, type RiskAssessment, type GenGuardSettings } from '../core/types';
@@ -23,20 +21,10 @@ type LiveUpdateStatus = 'ok' | 'offline' | 'error';
 
 const MODEL_CACHE_KEY = `${NER_MODEL_CONTRACT.hfRepoId}/${NER_MODEL_CONTRACT.hfFilename}`;
 const TOKENIZER_CACHE_KEY = `${NER_MODEL_CONTRACT.hfRepoId}/${NER_MODEL_CONTRACT.tokenizerFilename}`;
-const OCR_DET_KEY  = `${OCR_MODEL_CONTRACT.hfRepoId}/${OCR_MODEL_CONTRACT.detFilename}`;
-const OCR_REC_KEY  = `${OCR_MODEL_CONTRACT.hfRepoId}/${OCR_MODEL_CONTRACT.recFilename}`;
-const OCR_DICT_KEY = `${OCR_MODEL_CONTRACT.hfRepoId}/${OCR_MODEL_CONTRACT.dictFilename}`;
 
 interface ModelState {
   download: DownloadStatus;
   ort: OrtStatus;
-  progress: number;
-  error: string;
-}
-
-interface OcrState {
-  download: DownloadStatus;
-  status: 'not_loaded' | 'loading' | 'ready' | 'error';
   progress: number;
   error: string;
 }
@@ -46,12 +34,6 @@ export default function App() {
   const [model, setModel] = useState<ModelState>({
     download: 'idle',
     ort: 'not_loaded',
-    progress: 0,
-    error: '',
-  });
-  const [ocr, setOcr] = useState<OcrState>({
-    download: 'idle',
-    status: 'not_loaded',
     progress: 0,
     error: '',
   });
@@ -157,38 +139,6 @@ export default function App() {
     }
   }, [loadTokenizer]);
 
-  /** Read OCR det/rec/dict from IndexedDB and init the OCR sessions */
-  const loadOcrFromCache = useCallback(async () => {
-    if (isOcrReady()) {
-      setOcr((prev) => ({ ...prev, status: 'ready' }));
-      return;
-    }
-    try {
-      setOcr((prev) => ({ ...prev, status: 'loading', error: '' }));
-
-      const [detBuf, recBuf, dictBuf] = await Promise.all([
-        getFile(OCR_DET_KEY),
-        getFile(OCR_REC_KEY),
-        getFile(OCR_DICT_KEY),
-      ]);
-      if (!detBuf || !recBuf || !dictBuf) {
-        setOcr((prev) => ({ ...prev, status: 'error', error: 'OCR files not in cache' }));
-        return;
-      }
-
-      const dictText = new TextDecoder().decode(dictBuf);
-      await initOcrSessions(detBuf, recBuf, dictText);
-
-      setOcr((prev) => ({ ...prev, status: 'ready' }));
-    } catch (err) {
-      setOcr((prev) => ({
-        ...prev,
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    }
-  }, []);
-
   // Live assessment state from content script
   const [liveAssessment, setLiveAssessment] = useState<RiskAssessment | null>(null);
   const liveAssessmentRef = useRef<RiskAssessment | null>(null);
@@ -237,16 +187,6 @@ export default function App() {
         }));
         if (msg.status === 'cached') {
           loadOrtFromCache();
-        }
-      } else if (msg.type === 'OCR_DOWNLOAD_STATUS') {
-        setOcr((prev) => ({
-          ...prev,
-          download: msg.status,
-          progress: msg.progress,
-          error: msg.status === 'error' ? msg.error : prev.error,
-        }));
-        if (msg.status === 'cached') {
-          loadOcrFromCache();
         }
       } else if (msg.type === 'ASSESS_TEXT') {
         const text = msg.text ?? '';
@@ -473,15 +413,6 @@ export default function App() {
       }
     });
 
-    Promise.all([hasFile(OCR_DET_KEY), hasFile(OCR_REC_KEY), hasFile(OCR_DICT_KEY)]).then(
-      ([d, r, dc]) => {
-        if (d && r && dc) {
-          setOcr((prev) => ({ ...prev, download: 'cached', progress: 100 }));
-          loadOcrFromCache();
-        }
-      },
-    );
-
     return () => {
       disposed = true;
       if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
@@ -490,7 +421,7 @@ export default function App() {
       portRef.current?.disconnect();
       portRef.current = null;
     };
-  }, [loadOrtFromCache, loadOcrFromCache]);
+  }, [loadOrtFromCache]);
 
   // Scan current tab's prompt text on mount / when model becomes ready
   useEffect(() => {
@@ -526,14 +457,8 @@ export default function App() {
 
   const handleReloadModel = async () => {
     await dispose();
-    await disposeOcr();
     setModel({ download: 'idle', ort: 'not_loaded', progress: 0, error: '' });
-    setOcr({ download: 'idle', status: 'not_loaded', progress: 0, error: '' });
     portRef.current?.postMessage({ type: 'CLEAR_MODEL_CACHE' });
-  };
-
-  const handleDownloadOcr = () => {
-    portRef.current?.postMessage({ type: 'DOWNLOAD_OCR_MODELS' });
   };
 
   const combinedStatus = model.ort === 'ready'
@@ -580,9 +505,7 @@ export default function App() {
         {activeTab === 'model' && (
           <ModelStatusPage
             model={model}
-            ocr={ocr}
             onDownload={handleDownloadModel}
-            onDownloadOcr={handleDownloadOcr}
             onReload={handleReloadModel}
           />
         )}
@@ -895,11 +818,9 @@ function DashboardPage({ model, onDownload, liveAssessment, liveSource, liveScan
 
 // ── Model Status Page ────────────────────────────────────────────────────────
 
-function ModelStatusPage({ model, ocr, onDownload, onDownloadOcr, onReload }: {
+function ModelStatusPage({ model, onDownload, onReload }: {
   model: ModelState;
-  ocr: OcrState;
   onDownload: () => void;
-  onDownloadOcr: () => void;
   onReload: () => void;
 }) {
   return (
@@ -933,44 +854,20 @@ function ModelStatusPage({ model, ocr, onDownload, onDownloadOcr, onReload }: {
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-        <h2 className="text-sm font-semibold mb-3">OCR Models (PP-OCRv5)</h2>
+        <h2 className="text-sm font-semibold mb-3">Image OCR</h2>
         <dl className="space-y-2 text-xs">
-          <Row label="Detection" value="PP-OCRv5 server det (DBNet)" />
-          <Row label="Recognition" value="PP-OCRv5 mobile rec (English)" />
-          <Row label="Source" value="HuggingFace: monkt/paddleocr-onnx" />
-          <Row label="Runtime" value="ONNX Runtime Web (WASM)" />
-          <Row label="Download" value={<DownloadLabel status={ocr.download} />} />
-          <Row label="Inference" value={
-            ocr.status === 'ready' ? <span className="text-green-600 dark:text-green-400">Ready</span>
-            : ocr.status === 'loading' ? <span className="text-yellow-600 dark:text-yellow-400">Initializing...</span>
-            : ocr.status === 'error' ? <span className="text-red-500">Error</span>
-            : <span className="text-gray-500">Not loaded</span>
-          } />
-          {ocr.download === 'downloading' && (
-            <div>
-              <div className="flex justify-between mb-1">
-                <dt className="text-gray-500">Progress</dt>
-                <dd>{ocr.progress}%</dd>
-              </div>
-              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                <div className="bg-blue-600 h-1.5 rounded-full transition-all" style={{ width: `${ocr.progress}%` }} />
-              </div>
-            </div>
-          )}
-          {ocr.error && <Row label="Error" value={<span className="text-red-500 truncate max-w-[200px]" title={ocr.error}>{ocr.error}</span>} />}
+          <Row label="Engine" value="Tesseract.js" />
+          <Row label="Runtime" value="Bundled WASM worker" />
+          <Row label="Language" value="English data auto-caches on first image OCR" />
+          <Row label="Status" value={<span className="text-green-600 dark:text-green-400">Ready</span>} />
         </dl>
-        {(ocr.download === 'idle' || ocr.download === 'error') && ocr.status !== 'ready' && (
-          <button onClick={onDownloadOcr} className="mt-3 w-full px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
-            Download OCR Models (~96 MB)
-          </button>
-        )}
       </div>
 
       <div className="flex gap-2">
         {(model.download === 'idle' || model.download === 'error') && model.ort !== 'ready' && (
           <button onClick={onDownload} className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">Download & Load NER Model</button>
         )}
-        {(model.ort === 'ready' || ocr.status === 'ready') && (
+        {model.ort === 'ready' && (
           <button onClick={onReload} className="flex-1 px-3 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm rounded hover:bg-gray-300 dark:hover:bg-gray-600">Reload Models</button>
         )}
       </div>
