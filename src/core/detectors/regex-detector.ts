@@ -61,7 +61,6 @@ const ID_NIK_FLATTENED_ROW_CONTEXT = /[A-Za-z][A-Za-z\s.'-]{2,50}$/;
 const ID_NIK_FLATTENED_NEXT_COLUMN = /^\s*\+?62[\s-]?\d/;
 const CREDIT_CARD_SHAPE = /^(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2}))[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}$/;
 const OCR_PHONE_SHAPE = /^\+?(?:60|62)[.\s:-]?\d{2,4}(?:[.\s:-]?\d{3,4}){1,3}$/;
-const OCR_NORMALIZED_MARKER = 'OCR NORMALIZED';
 
 /** Luhn checksum validation for credit card numbers. */
 function luhnCheck(digits: string): boolean {
@@ -148,10 +147,9 @@ export function detectRegex(text: string): { findings: Finding[]; timeMs: number
       // Skip bank account pattern if it overlaps with IC number format
       if (pattern.name === 'BANK_ACCT' && /^\d{6}-\d{2}-\d{4}$/.test(value)) continue;
       if (pattern.name === 'BANK_ACCT' && CREDIT_CARD_SHAPE.test(value) && luhnCheck(value)) continue;
-      if (pattern.name === 'TAX_ID' && text.includes(OCR_NORMALIZED_MARKER) && OCR_PHONE_SHAPE.test(value)) continue;
+      if (pattern.name === 'TAX_ID' && OCR_PHONE_SHAPE.test(value)) continue;
       if (
         (pattern.name === 'MY_POSTCODE' || pattern.name === 'SG_POSTCODE' || pattern.name === 'PH_POSTCODE') &&
-        text.includes(OCR_NORMALIZED_MARKER) &&
         /\+?(?:60|62)[.\s:-]?\d{2,4}[.\s:-]?\d{3,4}[.\s:-]?\d{3,5}/.test(getLineAt(text, startIndex))
       ) {
         continue;

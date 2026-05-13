@@ -15,7 +15,8 @@
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://tessdata.projectnaptha.com/*"
   ],
 
   "background": {

@@ -58,7 +58,7 @@ describe('regex-detector', () => {
 
     it('suppresses OCR phone fragments that overlap normalized phone output', () => {
       const { findings } = detectRegex(
-        'NPWP\n+62.812.3456.7890\nOCR NORMALIZED\nNO HP: +62 812 3456 7890',
+        'NPWP\n+62.812.3456.7890\nNO HP: +62 812 3456 7890',
       );
       expect(findings.find((f) => f.type === 'TAX_ID' && f.value === '62.812.3456.7890')).toBeUndefined();
       expect(findings.find((f) => f.type === 'PHONE' && f.value === '+62 812 3456 7890')).toBeDefined();
@@ -252,7 +252,7 @@ describe('regex-detector', () => {
 
     it('suppresses OCR postcode fragments inside phone numbers when normalized output exists', () => {
       const { findings } = detectRegex(
-        'Alamat\n+62.819.1234.5678\nOCR NORMALIZED\nNO HP: +62 819 1234 5678',
+        'Alamat\n+62.819.1234.5678\nNO HP: +62 819 1234 5678',
       );
       expect(findings.find((f) => f.type === 'PH_POSTCODE' && f.value === '1234')).toBeUndefined();
       expect(findings.find((f) => f.type === 'PH_POSTCODE' && f.value === '5678')).toBeUndefined();

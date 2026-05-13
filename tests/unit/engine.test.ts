@@ -83,7 +83,7 @@ describe('engine', () => {
     expect(detectRegex).not.toHaveBeenCalledWith(expect.stringContaining('secret()'));
   });
 
-  it('normalizes OCR table text before scanning', async () => {
+  it('passes raw OCR text through before scanning', async () => {
     const { assess } = await import('../../src/core/engine');
     const { detectRegex } = await import('../../src/core/detectors/regex-detector');
     const { extractTextFromImage } = await import('../../src/core/extractors/image-ocr');
@@ -121,18 +121,45 @@ describe('engine', () => {
     const scanned = vi.mocked(detectRegex).mock.calls[0][0];
     expect(scanned).toContain('3171011508900001');
     expect(scanned).toContain('3273025211950003');
-    expect(scanned).toContain('NIK: 3578052003880005');
-    expect(scanned).toContain('NO HP: +62 812 3456 7890');
-    expect(scanned).toContain('NO HP: +62 856 9876 5432');
-    expect(scanned).toContain('NO HP: +62 819 1234 5678');
-    expect(scanned).toContain('NPWP: 12.345.678.9-012.345');
-    expect(scanned).toContain('NPWP: 98.765.432.1-098.765');
-    expect(scanned).toContain('NPWP: 11.222.333.4-555.666');
+    expect(scanned).toContain('AgusPrasetv03578052003880005');
+    expect(scanned).toContain('+62.812.3456.7890');
+    expect(scanned).toContain('+62.856.9876.5432');
+    expect(scanned).toContain('+62.819.1234.5678');
+    expect(scanned).toContain('12.345.678.9-012.345');
+    expect(scanned).toContain('98.765.432.1-098.765');
+    expect(scanned).toContain('11.222.333.4-555.666');
     expect(scanned).toContain('FORMULIRVERIFIKASIPELANGGAN');
-    expect(scanned).toContain('OCR NORMALIZED');
+    expect(scanned).not.toContain('OCR NORMALIZED');
   });
 
-  it('preserves raw OCR text when normalization adds helper lines', async () => {
+  it('does not append duplicate OCR helper lines when text is already clean', async () => {
+    const { assess } = await import('../../src/core/engine');
+    const { detectRegex } = await import('../../src/core/detectors/regex-detector');
+    const { extractTextFromImage } = await import('../../src/core/extractors/image-ocr');
+    vi.mocked(detectRegex).mockClear();
+    vi.mocked(extractTextFromImage).mockResolvedValueOnce({
+      text:
+        'KARTU DATA PELANGGAN\n' +
+        'NIK: 5171034106920002\n' +
+        'NO HP: +62 878 5555 4444\n' +
+        'NPWP: 44.555.666.7-888.999',
+      timeMs: 470,
+      source: 'ocr',
+    });
+
+    const file = new File(['dummy'], 'indonesia-pii-ocr-image.png', { type: 'image/png' });
+
+    await assess({ files: [file] }, {
+      enableRegex: true,
+      enableNer: false,
+    });
+
+    const scanned = vi.mocked(detectRegex).mock.calls[0][0];
+    expect(scanned.match(/NPWP: 44\.555\.666\.7-888\.999/g)).toHaveLength(1);
+    expect(scanned).not.toContain('OCR NORMALIZED');
+  });
+
+  it('does not add postcode helper lines to OCR text', async () => {
     const { assess } = await import('../../src/core/engine');
     const { detectRegex } = await import('../../src/core/detectors/regex-detector');
     const { extractTextFromImage } = await import('../../src/core/extractors/image-ocr');
